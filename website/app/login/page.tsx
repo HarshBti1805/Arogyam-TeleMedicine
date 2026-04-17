@@ -6,12 +6,15 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { Stethoscope, Mail, Lock, Eye, EyeOff, ArrowRight } from 'lucide-react';
+import { Stethoscope, Mail, Lock, Eye, EyeOff, ArrowRight, AlertCircle } from 'lucide-react';
+import { auth, ApiError } from '@/lib/api';
+import { saveAuthUser } from '@/lib/auth-storage';
 
 export default function Login() {
   const router = useRouter();
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     email: '',
     password: '',
@@ -19,9 +22,19 @@ export default function Login() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError(null);
     setIsLoading(true);
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    router.push('/dashboard');
+    try {
+      const { user } = await auth.loginDoctor(formData.email, formData.password);
+      saveAuthUser(user);
+      router.push('/dashboard');
+    } catch (err) {
+      const msg =
+        err instanceof ApiError ? err.message : 'Login failed. Please try again.';
+      setError(msg);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -58,6 +71,12 @@ export default function Login() {
           </CardHeader>
 
           <CardContent className="pt-6">
+            {error && (
+              <div className="mb-4 flex items-start gap-2 p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm">
+                <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
             <form onSubmit={handleSubmit} className="space-y-5">
               <motion.div
                 initial={{ opacity: 0, x: -16 }}

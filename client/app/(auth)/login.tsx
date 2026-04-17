@@ -25,9 +25,11 @@ import Animated, {
 } from "react-native-reanimated";
 import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
-import { TextInput, Button } from "react-native-paper";
+import { TextInput, Button, HelperText } from "react-native-paper";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useNavigation } from "@react-navigation/native";
+import { auth, ApiError } from "@/utils/api";
+import { saveAuthUser } from "@/utils/auth-storage";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -44,10 +46,34 @@ export default function LoginScreen() {
     }
   }, [fontsLoaded]);
 
-  // Form state (no logic, just UI)
+  // Form state
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
   const [showPassword, setShowPassword] = React.useState(false);
+  const [submitting, setSubmitting] = React.useState(false);
+  const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
+
+  const handleLogin = React.useCallback(async () => {
+    setErrorMsg(null);
+    if (!email.trim() || !password) {
+      setErrorMsg("Please enter your email and password.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const { user } = await auth.loginPatient(email.trim(), password);
+      await saveAuthUser(user);
+      router.replace("/(home)/home");
+    } catch (e) {
+      setErrorMsg(
+        e instanceof ApiError
+          ? e.message
+          : "Could not sign in. Please try again."
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }, [email, password]);
 
   // Animations
   const floatAnim = useSharedValue(0);
@@ -329,10 +355,9 @@ export default function LoginScreen() {
                     >
                       <Button
                         mode="contained"
-                        onPress={() => {
-                          router.replace("/(home)/home");
-                          // navigation.navigate("home" as never);
-                        }}
+                        onPress={handleLogin}
+                        loading={submitting}
+                        disabled={submitting}
                         style={{
                           paddingVertical: 8,
                           backgroundColor: "transparent",
@@ -346,9 +371,14 @@ export default function LoginScreen() {
                           color: "#fff",
                         }}
                       >
-                        Sign In
+                        {submitting ? "Signing in..." : "Sign In"}
                       </Button>
                     </LinearGradient>
+                    {errorMsg ? (
+                      <HelperText type="error" visible style={{ marginTop: 4 }}>
+                        {errorMsg}
+                      </HelperText>
+                    ) : null}
                   </Animated.View>
 
                   {/* Divider */}

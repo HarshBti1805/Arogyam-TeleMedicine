@@ -25,6 +25,7 @@ import { BlurView } from "expo-blur";
 import { LinearGradient } from "expo-linear-gradient";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import FontAwesome from "@expo/vector-icons/FontAwesome";
+import { clearAuthUser } from "@/utils/auth-storage";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -199,7 +200,8 @@ export default function HomeScreen() {
             </View>
             <View className="flex-row items-center gap-3">
               <TouchableOpacity
-                onPress={() => {
+                onPress={async () => {
+                  await clearAuthUser();
                   router.replace("/(auth)/login");
                 }}
                 style={{

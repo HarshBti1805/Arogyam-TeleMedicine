@@ -32,6 +32,11 @@ enum Gender {
   OTHER
 }
 
+enum AppointmentType {
+  ONLINE
+  ON_SITE
+}
+
 model User {
   id        String   @id @default(uuid())
   email     String   @unique
@@ -57,7 +62,12 @@ model PatientProfile {
   gender      Gender?
   bloodGroup  String?
   allergies   String?  // Comma-separated or short text
-  
+
+  // Optional patient location (used to find nearby doctors)
+  city        String?
+  latitude    Float?
+  longitude   Float?
+
   // Relations
   appointments  Appointment[]
   medicalRecords MedicalRecord[]
@@ -72,9 +82,20 @@ model DoctorProfile {
   specialization String   // e.g., "Cardiologist", "Dermatologist"
   licenseNumber  String   @unique
   experienceYears Int     @default(0)
-  consultationFee Decimal @db.Decimal(10, 2) // Use Decimal for money
+  consultationFee Decimal  @default(0) @db.Decimal(10, 2)
   bio            String?
   isVerified     Boolean  @default(false)    // Admin approval flag
+
+  // Clinic / workplace location (captured at registration via map picker)
+  clinicName     String?
+  clinicAddress  String?   // Full readable address
+  city           String?
+  country        String?
+  latitude       Float?    // Decimal degrees
+  longitude      Float?    // Decimal degrees
+
+  // PayPal email for receiving payments from patients
+  paypalEmail    String?
 
   // Availability: Stored as JSON for flexibility
   // Format: { "Monday": ["09:00", "10:00"], "Tuesday": ["14:00"] }
@@ -82,6 +103,10 @@ model DoctorProfile {
 
   // Relations
   appointments Appointment[]
+
+  @@index([specialization])
+  @@index([city])
+  @@index([latitude, longitude])
 }
 
 // 6. Appointments
@@ -91,12 +116,15 @@ model Appointment {
   doctorId  String
   patient   PatientProfile    @relation(fields: [patientId], references: [id])
   doctor    DoctorProfile     @relation(fields: [doctorId], references: [id])
-  
+
   dateTime  DateTime          // The scheduled slot
   status    AppointmentStatus @default(PENDING)
-  symptoms  String?           // Brief description by patient
-  
-  // Video Call Link (Agora/Twilio/Zoom link)
+  type      AppointmentType   @default(ONLINE)  // ONLINE or ON_SITE
+  isFree    Boolean           @default(false)   // true when it is the patient's first appointment with this doctor
+  symptoms  String?           // Brief description from patient
+  notes     String?           // Any additional notes
+
+  // Video Call Link (Agora/Twilio/Zoom link) — set by doctor for online appointments
   meetingLink String?
 
   createdAt DateTime @default(now())
@@ -105,6 +133,10 @@ model Appointment {
   // Relations
   prescription Prescription?
   payment      Payment?
+
+  @@index([patientId])
+  @@index([doctorId])
+  @@index([dateTime])
 }
 
 // 7. Medical Records (EHR) & Prescriptions
@@ -137,12 +169,15 @@ model Payment {
   id            String      @id @default(uuid())
   appointmentId String      @unique
   appointment   Appointment @relation(fields: [appointmentId], references: [id])
-  
+
   amount        Decimal     @db.Decimal(10, 2)
   currency      String      @default("USD")
-  status        String      // "SUCCESS", "FAILED", "PENDING"
-  transactionId String?     // ID from Stripe/Razorpay/PayPal
-  
+  // "PENDING" | "SUCCESS" | "FAILED"
+  status        String      @default("PENDING")
+  // "PAYPAL" | "FREE" | etc.
+  method        String      @default("PAYPAL")
+  transactionId String?     // PayPal transaction / reference ID provided by patient
+
   createdAt     DateTime    @default(now())
 }
 

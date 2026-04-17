@@ -38,8 +38,18 @@
             "backgroundColor": "#000000"
           }
         }
-      ]
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow Arogyam to use your location to find doctors near you."
+        }
+      ],
+      "@react-native-community/datetimepicker"
     ],
+    "extra": {
+      "apiUrl": "http://172.21.253.38:5000"
+    },
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true

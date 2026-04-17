@@ -27,9 +27,12 @@ import Animated, {
 import { BlurView } from "expo-blur";
 
 import { LinearGradient } from "expo-linear-gradient";
-import { TextInput, Button } from "react-native-paper";
+import { TextInput, Button, HelperText } from "react-native-paper";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import AntDesign from "@expo/vector-icons/AntDesign";
+import { router } from "expo-router";
+import { auth, ApiError } from "@/utils/api";
+import { saveAuthUser } from "@/utils/auth-storage";
 
 SplashScreen.preventAutoHideAsync();
 
@@ -47,13 +50,52 @@ export default function RegisterScreen() {
   const isDark = colorScheme === "dark";
   const primaryColor = isDark ? "#818CF8" : "#6366F1";
 
-  // Form state (no logic, just UI)
+  // Form state
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [termsAccepted, setTermsAccepted] = useState(false);
+
+  const handleRegister = useCallback(async () => {
+    setErrorMsg(null);
+    if (!name.trim() || !email.trim() || !password) {
+      setErrorMsg("Please fill in all required fields.");
+      return;
+    }
+    if (password.length < 6) {
+      setErrorMsg("Password must be at least 6 characters.");
+      return;
+    }
+    if (password !== confirmPassword) {
+      setErrorMsg("Passwords do not match.");
+      return;
+    }
+    if (!termsAccepted) {
+      setErrorMsg("Please accept the Terms of Service and Privacy Policy to continue.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const { user } = await auth.registerPatient({
+        email: email.trim(),
+        password,
+        fullName: name.trim(),
+      });
+      await saveAuthUser(user);
+      router.replace("/(home)/home");
+    } catch (e) {
+      setErrorMsg(
+        e instanceof ApiError ? e.message : "Registration failed. Please try again."
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }, [name, email, password, confirmPassword, termsAccepted]);
 
   // Animations
   const floatAnim = useSharedValue(0);
@@ -407,12 +449,43 @@ export default function RegisterScreen() {
                   </View>
 
                   {/* Terms and Conditions */}
-                  <Animated.View
-                    entering={FadeInUp.delay(600)}
-                    className="flex-row items-start gap-2"
+                  <TouchableOpacity
+                    activeOpacity={0.7}
+                    onPress={() => {
+                      setTermsAccepted((v) => !v);
+                      setErrorMsg(null);
+                    }}
+                    style={{ flexDirection: "row", alignItems: "flex-start", gap: 10 }}
                   >
-                    <View className="w-5 h-5 rounded border-2 border-indigo-600 dark:border-indigo-400 mt-0.5" />
-                    <Text className="text-sm text-neutral-600 dark:text-neutral-300 flex-1 leading-5">
+                    {/* Checkbox */}
+                    <View
+                      style={{
+                        width: 22,
+                        height: 22,
+                        borderRadius: 6,
+                        borderWidth: 2,
+                        borderColor: termsAccepted
+                          ? primaryColor
+                          : isDark
+                          ? "rgba(255,255,255,0.3)"
+                          : "rgba(99,102,241,0.5)",
+                        backgroundColor: termsAccepted
+                          ? primaryColor
+                          : "transparent",
+                        justifyContent: "center",
+                        alignItems: "center",
+                        marginTop: 1,
+                        flexShrink: 0,
+                      }}
+                    >
+                      {termsAccepted && (
+                        <AntDesign name="check" size={13} color="#fff" />
+                      )}
+                    </View>
+                    <Text
+                      className="text-sm text-neutral-600 dark:text-neutral-300 flex-1 leading-5"
+                      style={{ fontFamily: "NeueRegular" }}
+                    >
                       By creating an account, you agree to our{" "}
                       <Text className="text-indigo-600 dark:text-indigo-400 font-semibold">
                         Terms of Service
@@ -422,7 +495,7 @@ export default function RegisterScreen() {
                         Privacy Policy
                       </Text>
                     </Text>
-                  </Animated.View>
+                  </TouchableOpacity>
 
                   {/* Register Button */}
                   <Animated.View entering={FadeInUp.delay(700).springify()}>
@@ -444,7 +517,9 @@ export default function RegisterScreen() {
                     >
                       <Button
                         mode="contained"
-                        onPress={() => navigation.navigate("login" as never)}
+                        onPress={handleRegister}
+                        loading={submitting}
+                        disabled={submitting}
                         style={{
                           paddingVertical: 8,
                           backgroundColor: "transparent",
@@ -459,10 +534,15 @@ export default function RegisterScreen() {
                         }}
                       >
                         <Text style={{ fontFamily: "NeueRegular" }}>
-                          Create Account
+                          {submitting ? "Creating..." : "Create Account"}
                         </Text>
                       </Button>
                     </LinearGradient>
+                    {errorMsg ? (
+                      <HelperText type="error" visible style={{ marginTop: 4 }}>
+                        {errorMsg}
+                      </HelperText>
+                    ) : null}
                   </Animated.View>
 
                   {/* Divider */}

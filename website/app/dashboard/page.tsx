@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
+import { doctors as doctorsApi, ApiError } from "@/lib/api";
+import { loadAuthUser, saveAuthUser } from "@/lib/auth-storage";
 import {
   PieChart,
   Pie,
@@ -105,7 +107,7 @@ interface Prescription {
 }
 
 export default function Dashboard() {
-  const [activeTab, setActiveTab] = useState("overview");
+  const [activeTab, setActiveTab] = useState<string>("overview");
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
   const [consultationMode, setConsultationMode] = useState<
     "chat" | "video" | null
@@ -659,7 +661,15 @@ export default function Dashboard() {
         </nav>
 
         <div className="pt-6 border-t border-neutral-200 space-y-2">
-          <button className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900 font-poppins transition-all">
+          <button
+            onClick={() => setActiveTab("settings")}
+            className={cn(
+              "w-full flex items-center gap-3 px-4 py-3 rounded-xl font-poppins transition-all",
+              activeTab === "settings"
+                ? "bg-neutral-900 text-white"
+                : "text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900"
+            )}
+          >
             <Settings className="w-5 h-5" />
             Settings
           </button>
@@ -2378,7 +2388,209 @@ export default function Dashboard() {
             </motion.div>
           </>
         )}
+
+        {/* ── Settings / Profile tab ── */}
+        {activeTab === "settings" && (
+          <SettingsPanel />
+        )}
       </main>
     </div>
+  );
+}
+
+// ── Standalone settings panel (loads + saves doctor profile) ──
+function SettingsPanel() {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [doctorId, setDoctorId] = useState<string | null>(null);
+
+  const [form, setForm] = useState({
+    fullName: "",
+    bio: "",
+    consultationFee: "",
+    paypalEmail: "",
+    experienceYears: "",
+    clinicName: "",
+    clinicAddress: "",
+    city: "",
+    country: "",
+  });
+
+  useEffect(() => {
+    const user = loadAuthUser();
+    if (user?.doctorProfile) {
+      const p = user.doctorProfile;
+      setDoctorId(p.id);
+      setForm({
+        fullName: p.fullName ?? "",
+        bio: p.bio ?? "",
+        consultationFee: p.consultationFee != null ? String(p.consultationFee) : "",
+        paypalEmail: p.paypalEmail ?? "",
+        experienceYears: p.experienceYears != null ? String(p.experienceYears) : "",
+        clinicName: p.clinicName ?? "",
+        clinicAddress: p.clinicAddress ?? "",
+        city: p.city ?? "",
+        country: p.country ?? "",
+      });
+    }
+    setLoading(false);
+  }, []);
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    setForm({ ...form, [e.target.name]: e.target.value });
+    setSaved(false);
+  };
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!doctorId) return;
+    setError(null);
+    setSaving(true);
+    try {
+      const { doctor } = await doctorsApi.updateProfile(doctorId, {
+        fullName: form.fullName || undefined,
+        bio: form.bio || undefined,
+        consultationFee: form.consultationFee ? Number(form.consultationFee) : undefined,
+        paypalEmail: form.paypalEmail || undefined,
+        experienceYears: form.experienceYears ? Number(form.experienceYears) : undefined,
+        clinicName: form.clinicName || undefined,
+        clinicAddress: form.clinicAddress || undefined,
+        city: form.city || undefined,
+        country: form.country || undefined,
+      });
+
+      // Keep local auth storage in sync
+      const user = loadAuthUser();
+      if (user) {
+        saveAuthUser({ ...user, doctorProfile: { ...user.doctorProfile, ...doctor } });
+      }
+      setSaved(true);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to save. Please try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="w-8 h-8 border-2 border-neutral-900 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  const inputCls = "w-full px-4 py-3 border border-neutral-300 rounded-xl focus:ring-2 focus:ring-neutral-400 focus:border-neutral-500 outline-none bg-white text-neutral-900 placeholder:text-neutral-400 font-poppins";
+
+  return (
+    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="max-w-2xl">
+      <h1 className="text-3xl font-neue-bold text-neutral-900 mb-2">Profile & Settings</h1>
+      <p className="text-neutral-500 font-poppins mb-8">Update your professional details and consultation fee.</p>
+
+      {error && (
+        <div className="mb-6 p-4 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm font-poppins">
+          {error}
+        </div>
+      )}
+      {saved && (
+        <div className="mb-6 p-4 rounded-xl bg-green-50 border border-green-200 text-green-700 text-sm font-poppins">
+          ✓ Profile saved successfully.
+        </div>
+      )}
+
+      <form onSubmit={handleSave} className="space-y-6">
+        {/* Personal */}
+        <div className="bg-white rounded-2xl border border-neutral-200 p-6 space-y-5">
+          <h2 className="text-lg font-neue-bold text-neutral-900">Personal information</h2>
+
+          <div>
+            <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">Full name</label>
+            <input type="text" name="fullName" value={form.fullName} onChange={handleChange} className={inputCls} placeholder="Dr. John Smith" />
+          </div>
+
+          <div>
+            <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">Bio (optional)</label>
+            <textarea name="bio" value={form.bio} onChange={handleChange} rows={3} className={inputCls + " resize-none"} placeholder="Brief professional summary visible to patients…" />
+          </div>
+
+          <div className="flex gap-4">
+            <div className="flex-1">
+              <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">Years of experience</label>
+              <input type="number" name="experienceYears" value={form.experienceYears} onChange={handleChange} min="0" max="60" className={inputCls} placeholder="5" />
+            </div>
+          </div>
+        </div>
+
+        {/* Clinic */}
+        <div className="bg-white rounded-2xl border border-neutral-200 p-6 space-y-5">
+          <h2 className="text-lg font-neue-bold text-neutral-900">Clinic / Practice</h2>
+
+          <div>
+            <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">Clinic name</label>
+            <input type="text" name="clinicName" value={form.clinicName} onChange={handleChange} className={inputCls} placeholder="Apollo Clinic, City Hospital, etc." />
+          </div>
+
+          <div>
+            <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">Address</label>
+            <input type="text" name="clinicAddress" value={form.clinicAddress} onChange={handleChange} className={inputCls} placeholder="123 Main St" />
+          </div>
+
+          <div className="flex gap-4">
+            <div className="flex-1">
+              <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">City</label>
+              <input type="text" name="city" value={form.city} onChange={handleChange} className={inputCls} placeholder="Mumbai" />
+            </div>
+            <div className="flex-1">
+              <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">Country</label>
+              <input type="text" name="country" value={form.country} onChange={handleChange} className={inputCls} placeholder="India" />
+            </div>
+          </div>
+        </div>
+
+        {/* Billing */}
+        <div className="bg-white rounded-2xl border border-neutral-200 p-6 space-y-5">
+          <h2 className="text-lg font-neue-bold text-neutral-900">Billing & Payments</h2>
+          <p className="text-sm text-neutral-500 font-poppins -mt-2">
+            Patients pay their second and subsequent appointments via PayPal. Set your fee and PayPal email here.
+          </p>
+
+          <div className="flex gap-4">
+            <div className="flex-1">
+              <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">Consultation fee (USD)</label>
+              <div className="relative">
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400 font-poppins text-sm">$</span>
+                <input
+                  type="number"
+                  name="consultationFee"
+                  value={form.consultationFee}
+                  onChange={handleChange}
+                  min="0"
+                  step="0.01"
+                  className={inputCls + " pl-8"}
+                  placeholder="50.00"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">PayPal email (for receiving payments)</label>
+            <input type="email" name="paypalEmail" value={form.paypalEmail} onChange={handleChange} className={inputCls} placeholder="doctor@paypal.com" />
+          </div>
+        </div>
+
+        <button
+          type="submit"
+          disabled={saving}
+          className="w-full py-3.5 rounded-xl bg-neutral-900 text-white font-semibold font-poppins hover:bg-neutral-800 transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
+        >
+          {saving ? (
+            <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+          ) : "Save changes"}
+        </button>
+      </form>
+    </motion.div>
   );
 }
