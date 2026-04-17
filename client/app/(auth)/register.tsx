@@ -192,7 +192,7 @@ export default function RegisterScreen() {
                 className="text-base text-neutral-600 dark:text-neutral-300 text-center px-2"
                 numberOfLines={2}
               >
-                Join Synapse-TeleMedicine and start your journey
+                Join Arogyam and start your journey
               </Text>
             </Animated.View>
 

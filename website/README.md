@@ -1,10 +1,10 @@
-# Synapse-TeleMedicine - Doctors Portal
+# Arogyam - Doctors Portal
 
 A comprehensive telemedicine platform designed specifically for healthcare professionals. The Doctors Portal provides a modern, intuitive interface for managing patients, appointments, consultations, and medical records.
 
 ## 🏥 Overview
 
-Synapse-TeleMedicine Doctors Portal is a Next.js-based web application that empowers healthcare professionals to deliver exceptional patient care through digital means. The platform offers a complete suite of tools for modern medical practice management.
+Arogyam Doctors Portal is a Next.js-based web application that empowers healthcare professionals to deliver exceptional patient care through digital means. The platform offers a complete suite of tools for modern medical practice management.
 
 ## ✨ Features
 
@@ -164,7 +164,7 @@ npm run start
 
 ## 📝 License
 
-This project is proprietary software for Synapse-TeleMedicine.
+This project is proprietary software for Arogyam.
 
 ## 🤝 Contributing
 
@@ -192,4 +192,4 @@ For technical support or questions:
 
 ---
 
-**Synapse-TeleMedicine** - Transforming healthcare delivery through technology.
+**Arogyam** - Transforming healthcare delivery through technology.

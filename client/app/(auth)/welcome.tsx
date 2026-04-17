@@ -227,7 +227,7 @@ export default function WelcomeScreen() {
             }}
             className="text-5xl tracking-tight mb-5 text-center"
           >
-            Synapse-TeleMedicine
+            Arogyam
           </Text>
           <Text
             style={{ fontFamily: "NeueRegular", lineHeight: 26 }}

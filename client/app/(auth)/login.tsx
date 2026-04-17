@@ -184,7 +184,7 @@ export default function LoginScreen() {
                 Welcome Back
               </Text>
               <Text style={{ fontFamily: "NeueRegular" }}>
-                Sign in to continue to Synapse-TeleMedicine
+                Sign in to continue to Arogyam
               </Text>
             </Animated.View>
 

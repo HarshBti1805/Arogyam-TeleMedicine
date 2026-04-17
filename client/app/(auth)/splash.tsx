@@ -159,7 +159,7 @@ export default function SplashScreenComponent() {
             style={{ fontFamily: "NeueRegular" }}
             className="text-5xl font-bold text-neutral-900 dark:text-white tracking-tight"
           >
-            Synapse-TeleMedicine
+            Arogyam
           </Text>
           <Text
             style={{ fontFamily: "NeueRegular" }}
