@@ -1,7 +1,20 @@
 import { Router, Request, Response } from "express";
 import { prisma } from "../config/databse";
+import {
+  createGoogleCalendarBooking,
+  isGoogleCalendarEnabled,
+} from "../services/googleCalendar";
 
 const router = Router();
+const CALENDAR_SYNC_REQUIRED =
+  (process.env.CALENDAR_SYNC_REQUIRED || "false").toLowerCase() === "true";
+
+async function rollbackAppointment(appointmentId: string): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await tx.payment.deleteMany({ where: { appointmentId } });
+    await tx.appointment.delete({ where: { id: appointmentId } });
+  });
+}
 
 const apptSelect = {
   id: true,
@@ -88,7 +101,7 @@ router.post("/", async (req: Request, res: Response) => {
     const free = await isFirstAppointment(patientId, doctorId);
     const fee = Number(doctor.consultationFee ?? 0);
 
-    const appointment = await prisma.appointment.create({
+    let appointment = await prisma.appointment.create({
       data: {
         patientId,
         doctorId,
@@ -114,10 +127,79 @@ router.post("/", async (req: Request, res: Response) => {
       select: apptSelect,
     });
 
+    let calendarSync: {
+      enabled: boolean;
+      status: "ok" | "failed" | "disabled";
+      eventId?: string;
+      eventLink?: string | null;
+      message?: string;
+    } = {
+      enabled: false,
+      status: "disabled",
+      message:
+        "Google Calendar not configured. Set GOOGLE_CLIENT_EMAIL, GOOGLE_PRIVATE_KEY, and GOOGLE_CALENDAR_ID.",
+    };
+
+    if (isGoogleCalendarEnabled()) {
+      try {
+        const cal = await createGoogleCalendarBooking({
+          appointmentId: appointment.id,
+          dateTime: appointment.dateTime,
+          type: appointment.type,
+          symptoms: appointment.symptoms,
+          notes: appointment.notes,
+          doctorName: appointment.doctor.fullName,
+          doctorEmail: appointment.doctor.user.email,
+          patientName: appointment.patient.fullName,
+          patientEmail: appointment.patient.user.email,
+          clinicName: appointment.doctor.clinicName,
+          clinicAddress: appointment.doctor.clinicAddress,
+        });
+
+        if (appointment.type === "ONLINE" && cal.meetingLink) {
+          appointment = await prisma.appointment.update({
+            where: { id: appointment.id },
+            data: { meetingLink: cal.meetingLink },
+            select: apptSelect,
+          });
+        }
+
+        calendarSync = {
+          enabled: true,
+          status: "ok",
+          eventId: cal.eventId,
+          eventLink: cal.eventLink,
+        };
+      } catch (calendarErr: any) {
+        console.error("Google Calendar sync failed", calendarErr);
+        calendarSync = {
+          enabled: true,
+          status: "failed",
+          message: calendarErr?.message || "Calendar sync failed",
+        };
+
+        if (CALENDAR_SYNC_REQUIRED) {
+          await rollbackAppointment(appointment.id);
+          return res.status(502).json({
+            error: "Calendar sync required but failed",
+            calendarSync,
+          });
+        }
+      }
+    } else if (CALENDAR_SYNC_REQUIRED) {
+      await rollbackAppointment(appointment.id);
+      return res.status(503).json({
+        error:
+          "Calendar sync required but Google Calendar is not configured",
+        calendarSync,
+      });
+    }
+
     return res.status(201).json({
       message: "Appointment created",
       appointment,
       isFree: free,
+      calendarSync,
     });
   } catch (err: any) {
     console.error("POST /appointments error", err);

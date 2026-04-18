@@ -6,6 +6,7 @@ import bcrypt from "bcryptjs";
 import { WebSocket } from "ws";
 import { prisma } from "./config/databse";
 import { wss, joinRoom, leaveAllRooms, broadcast } from "./lib/wsServer";
+import { getGoogleCalendarHealth } from "./services/googleCalendar";
 
 import authRoutes from "./routes/auth.routes";
 import doctorsRoutes from "./routes/doctors.routes";
@@ -31,6 +32,16 @@ app.get("/", (_req: Request, res: Response) => {
 
 app.get("/health", (_req: Request, res: Response) => {
   res.json({ status: "ok", time: new Date().toISOString() });
+});
+
+app.get("/health/calendar", async (_req: Request, res: Response) => {
+  const health = await getGoogleCalendarHealth();
+  const statusCode = health.writable ? 200 : 503;
+  res.status(statusCode).json({
+    status: health.writable ? "ok" : "error",
+    time: new Date().toISOString(),
+    calendar: health,
+  });
 });
 
 // Feature routes
