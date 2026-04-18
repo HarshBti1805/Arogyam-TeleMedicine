@@ -23,6 +23,9 @@ export default function RootLayout() {
         <Stack.Screen name="(auth)" options={{ headerShown: false }} />
         <Stack.Screen name="(home)" options={{ headerShown: false }} />
         <Stack.Screen name="doctor/[id]" options={{ headerShown: false, animation: "slide_from_right" }} />
+        <Stack.Screen name="rehab/[planId]" options={{ headerShown: false, animation: "slide_from_right" }} />
+        <Stack.Screen name="rehab/session/[sessionId]" options={{ headerShown: false, animation: "slide_from_right" }} />
+        <Stack.Screen name="appointments/[id]" options={{ headerShown: false, animation: "slide_from_right" }} />
         <Stack.Screen
           name="modal"
           options={{ presentation: "modal", title: "Modal" }}

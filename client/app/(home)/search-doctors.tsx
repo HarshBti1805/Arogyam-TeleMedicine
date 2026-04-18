@@ -111,14 +111,46 @@ export default function SearchDoctorsScreen() {
   }, [query, selectedSpec, cityFilter, nearbyMode, userLocation]); // eslint-disable-line
 
   const handleNearbyToggle = async () => {
-    if (!nearbyMode && !userLocation) {
-      const loc = await fetchLocation();
-      if (!loc) { setError("Location permission denied."); return; }
+    if (!nearbyMode) {
+      let loc = userLocation;
+      if (!loc) {
+        loc = await fetchLocation();
+        if (!loc) { setError("Location permission denied."); return; }
+      }
       setNearbyMode(true);
+      // Switch to map so the user sees the result immediately
+      setTab("map");
     } else {
-      setNearbyMode((p) => !p);
+      setNearbyMode(false);
+      setSelectedDoctor(null);
+      setRoute(null);
     }
   };
+
+  // When nearby mode activates and results arrive, auto-select the closest doctor
+  const autoSelectedRef = useRef(false);
+  useEffect(() => {
+    if (!nearbyMode || !userLocation) return;
+    const withCoords = results.filter((d) => d.latitude != null && d.longitude != null);
+    if (!withCoords.length) return;
+    // Already auto-selected for this nearby session — don't repeat on every re-render
+    if (autoSelectedRef.current) return;
+    autoSelectedRef.current = true;
+
+    // Sort by distance if available; else take first result (server already sorted)
+    const closest = withCoords.reduce((best, d) => {
+      if (d.distanceKm == null) return best;
+      if (best.distanceKm == null || d.distanceKm < best.distanceKm) return d;
+      return best;
+    }, withCoords[0]);
+
+    handleMarkerPress(closest);
+  }, [nearbyMode, userLocation, results]); // eslint-disable-line
+
+  // Reset auto-select flag when nearby mode turns off or search changes
+  useEffect(() => {
+    if (!nearbyMode) autoSelectedRef.current = false;
+  }, [nearbyMode, query, selectedSpec, cityFilter]);
 
   /** Tap a doctor marker on the map: select, fetch route, fit map */
   const handleMarkerPress = useCallback(async (doctor: DoctorPublic) => {
@@ -301,43 +333,27 @@ export default function SearchDoctorsScreen() {
             provider={PROVIDER_DEFAULT}
             initialRegion={{ latitude: mapCenter.latitude, longitude: mapCenter.longitude, latitudeDelta: 0.12, longitudeDelta: 0.12 }}
             showsUserLocation={!!userLocation}
+            showsMyLocationButton={false}
             showsCompass
           >
             {/* Route polyline */}
             {route && (
               <Polyline
                 coordinates={route.coordinates}
-                strokeColor={primaryColor}
+                strokeColor="#3b82f6"
                 strokeWidth={4}
-                lineDashPattern={undefined}
               />
             )}
 
-            {/* Doctor markers */}
+            {/* Doctor markers — native platform pin, red / dark-red when selected */}
             {results.filter((d) => d.latitude && d.longitude).map((d) => (
               <Marker
                 key={d.id}
                 coordinate={{ latitude: d.latitude!, longitude: d.longitude! }}
                 onPress={() => handleMarkerPress(d)}
-              >
-                <View style={{
-                  backgroundColor: selectedDoctor?.id === d.id ? primaryColor : isDark ? "#1e1b4b" : "#fff",
-                  borderRadius: 20,
-                  borderWidth: 2,
-                  borderColor: primaryColor,
-                  paddingHorizontal: 8,
-                  paddingVertical: 4,
-                  shadowColor: "#000",
-                  shadowOffset: { width: 0, height: 2 },
-                  shadowOpacity: 0.2,
-                  shadowRadius: 4,
-                  elevation: 4,
-                }}>
-                  <Text style={{ fontSize: 11, fontFamily: "NeueBold", color: selectedDoctor?.id === d.id ? "#fff" : primaryColor }} numberOfLines={1}>
-                    {d.fullName.split(" ").slice(-1)[0]}
-                  </Text>
-                </View>
-              </Marker>
+                pinColor={selectedDoctor?.id === d.id ? "#b91c1c" : "#ef4444"}
+                tracksViewChanges={false}
+              />
             ))}
           </MapView>
 
@@ -426,6 +442,7 @@ export default function SearchDoctorsScreen() {
     </View>
   );
 }
+
 
 function DoctorCard({
   doctor,
