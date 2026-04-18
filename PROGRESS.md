@@ -66,6 +66,86 @@
 
 ---
 
+## ✅ Done — Appointment Recording & AI Analysis (April 2026)
+
+### Recording Flow
+- [x] **Two-party consent UI** (mandatory) — `ConsentModal.tsx` shown before any recording starts; both patient and doctor must explicitly toggle consent
+- [x] **In-person audio recording** — `AudioRecorder.tsx` using `expo-av` with live timer, pause/resume, stop controls
+- [x] **Online video call** — `VideoCall.tsx` using `react-native-webrtc`, WebRTC signaling via server WebSocket
+- [x] **Appointment detail screen** — `client/app/appointments/[id].tsx` shows recording or call button based on appointment type
+
+### AI Analysis Pipeline (`server/src/services/analysisPipeline.ts`)
+- [x] Audio/video upload via `POST /api/appointments/:id/recording` (multer, stored in `server/uploads/`)
+- [x] **Whisper transcription** — `whisper-1` model, 3-retry with exponential back-off
+- [x] **GPT-4o-mini structured analysis** — returns `{ summary, keyFindings[], suggestedExercises[], confidence }` in JSON mode
+- [x] Transcript saved to `Transcript` model, analysis to `AIAnalysis` model
+- [x] WebSocket events emitted: `recording.uploaded`, `transcription.complete`, `analysis.result.ready` — patient and doctor notified in real time
+
+### Doctor Portal — Analysis & Plan Creation
+- [x] `/appointments/[id]` — transcript viewer + AI analysis (summary, findings, suggested exercises), approve button
+- [x] `/rehab/create` — plan builder pre-filled from AI suggestions; joint dropdown, angle sliders, reps/sets/hold config
+- [x] `/rehab/plans/[id]` — plan detail with recharts `LineChart` of `overallScore` over time, alerts panel, session history
+- [x] `/rehab/alerts` — all unacknowledged alerts with severity color coding and acknowledge action
+
+---
+
+## ✅ Done — Tele-Rehab MVP (April 2026)
+
+### Prisma Schema — 7 New Models
+- [x] `AppointmentRecording` (mediaType, consent flags, mediaUrl)
+- [x] `Transcript` (rawText, segments JSON, language)
+- [x] `AIAnalysis` (summary, keyFindings, suggestedExercises, confidence, doctorApproved)
+- [x] `RehabPlan` (status enum, exercises relation, sessions relation, alerts relation)
+- [x] `RehabExercise` (targetJoint, targetAngleMin/Max, holdDurationSec, reps, sets)
+- [x] `RehabSession` (overallScore, repScores JSON, status enum)
+- [x] `RehabAlert` (severity enum LOW/MEDIUM/HIGH, acknowledged)
+
+### Python Pose Service (`models/`, port 8000)
+- [x] `POST /score` — score from pre-extracted landmark frames (on-device path)
+- [x] `POST /score-from-video` — extract landmarks server-side via MediaPipe Python, then score (active fallback)
+- [x] `WebSocket /stream` — real-time per-frame feedback (`good_form`, `form_warning`, `rep_complete`)
+- [x] `pose/scorer.py` — joint angle math (dot product + arccos), rep detection (peak detection on angle timeseries), compensation flagging
+- [x] `pose/mediapipe_runner.py` — server-side frame extraction from video using `cv2` + `mediapipe`
+- [x] pytest unit tests for all scorer functions
+
+### Backend Rehab API (`server/src/routes/`)
+- [x] `POST/GET/PATCH /api/rehab/plans` — plan CRUD with exercises
+- [x] `POST /api/rehab/sessions`, `PATCH /api/rehab/sessions/:id/complete`
+- [x] `GET /api/rehab/alerts`, `PATCH /api/rehab/alerts/:id/acknowledge`
+- [x] `GET /api/media/:id` — range-request-capable media streaming
+- [x] WebSocket events: `rehab.session.started`, `rehab.session.completed`, `rehab.alert.created`, `webrtc.signal`
+- [x] Auto-create `RehabAlert` MEDIUM/HIGH when session score < 60/40
+
+### WebSocket Server
+- [x] `ws` package attached to existing HTTP server via upgrade event
+- [x] Room-based broadcast: `broadcast(event, payload, roomId?)`
+- [x] WebRTC signal relay via `webrtc.signal` event
+- [x] Exponential backoff reconnect in `client/utils/wsClient.ts`
+
+### Patient App — Rehab Tab
+- [x] **Rehab tab** added to tab bar (`(home)/rehab.tsx`) — lists plans with progress %
+- [x] **Plan detail** (`rehab/[planId].tsx`) — exercise cards with specs, "Start Session" per exercise
+- [x] **Session screen** (`rehab/session/[sessionId].tsx`) — full-screen camera, live WS feedback overlay, rep counter
+
+### Fallback & Error Handling
+- [x] Pose service unreachable → records video, uploads via `/score-from-video`, shows "queued for review"
+- [x] WS disconnect mid-session → `WsClient` reconnects with exponential backoff (1s→2s→4s, max 30s), queues pending frames
+- [x] Transcription fails → retries 3× with back-off; doctor notified "Transcript pending"
+- [x] LLM malformed response → placeholder "Analysis unavailable" saved
+- [x] WebRTC fails → degrades to audio-only → chat fallback with toast notifications
+- [x] Score below threshold → auto `RehabAlert` created and broadcast to doctor
+
+### Shared Types
+- [x] `server/src/types/rehab.ts` — `PoseLandmark`, `LandmarkFrame`, `ExerciseConfig`, `ScoringResult`, all DTOs
+- [x] `server/src/types/analysis.ts` — `AIAnalysisDTO`, `SuggestedExerciseDTO`, `TranscriptSegment`, `LLMAnalysisResponse`
+
+### Tests
+- [x] `models/tests/test_scorer.py` — pytest for angle math, rep detection, session scoring
+- [x] `server/src/__tests__/rehab.test.ts` — Jest integration tests for plan creation + session complete (7 passing)
+- [x] `server/src/__tests__/analysisPipeline.test.ts` — pipeline happy path + malformed LLM response
+
+---
+
 ## 🔧 In Progress / Next Up
 
 ### Doctor Portal (website)
@@ -76,54 +156,14 @@
 - [ ] View patient medical records and prescriptions
 
 ### Patient App
-- [ ] Appointments tab: list upcoming + past appointments, cancel, join call
+- [ ] Appointments tab: list upcoming + past appointments, cancel
 - [ ] Profile tab: edit name, DOB, allergies, profile picture
-- [ ] Video call screen (WebRTC) for online appointments
 - [ ] Chat screen (WebSocket) between patient and doctor
 
 ### Auth & Session
 - [ ] JWT or session token (replace raw user object in storage)
 - [ ] Persistent auth check on app launch (redirect to login if expired)
 - [ ] "Remember me" for doctor portal
-
----
-
-## 🚀 MVP — Tele-Rehab (NEXT TO IMPLEMENT)
-
-This is the **core product differentiator** and the primary MVP deliverable.
-
-### What it is
-An AI-powered rehabilitation monitoring system:
-1. Patient performs prescribed physiotherapy exercises via the mobile camera
-2. A **pose estimation model** (e.g. MediaPipe Pose / MoveNet) evaluates each frame
-3. The model scores movement quality (range of motion, alignment, rep count)
-4. Results are reported back to the doctor in real time
-
-### Implementation plan
-- [ ] **Pose model service** (`models/` Python service):
-  - Integrate MediaPipe Pose or TensorFlow MoveNet
-  - Accept video frame stream via WebSocket
-  - Output: landmark coordinates, joint angles, per-rep score, session summary
-- [ ] **Rehab plan creation** (doctor portal):
-  - Doctor creates a rehab plan for a patient: exercise list, reps, sets, target range
-  - Stored in new `RehabPlan` + `RehabExercise` Prisma models
-- [ ] **Rehab session screen** (patient app):
-  - Live camera feed with pose overlay (skeleton on screen)
-  - Real-time feedback ("Straighten your back", "Good rep!")
-  - Session summary on completion
-- [ ] **Scoring & progress tracking**:
-  - `RehabSession` records stored per session
-  - Trend chart in patient profile and doctor dashboard
-  - Auto-alert to doctor when score drops below threshold
-- [ ] **WebSocket integration**:
-  - Patient streams pose landmarks → model service → scores pushed back in real time
-  - Doctor can optionally observe the session live
-
-### Models folder (`models/`)
-Currently contains placeholder model code. Priority order:
-1. Pose estimation + scoring (Tele-Rehab MVP)
-2. Wound/rash image detection
-3. RAG report summarization
 
 ---
 
@@ -138,6 +178,7 @@ Currently contains placeholder model code. Priority order:
 - [ ] Multi-language patient support
 - [ ] Admin analytics dashboard
 - [ ] HIPAA-compliant audit logging for medical actions
+- [ ] On-device MediaPipe pose (see `PROTOTYPE_NOTES.md`)
 
 ---
 
@@ -147,13 +188,21 @@ Currently contains placeholder model code. Priority order:
 client/ (Expo RN)  ─────────┐
                              │  HTTP  ──►  server/ (Express)  ──► PostgreSQL (Neon)
 website/ (Next.js) ──────────┘           │
-                                         ├──► /api/auth
-                                         ├──► /api/doctors
-                                         ├──► /api/appointments
-                                         ├──► WebSocket (chat / rehab stream)
-                                         └──► WebRTC signaling (video calls)
+                                         ├──► /api/auth, /api/doctors, /api/appointments
+                                         ├──► /api/appointments/:id/recording  (multer upload)
+                                         ├──► /api/appointments/:id/analysis   (Whisper+GPT)
+                                         ├──► /api/rehab/plans|sessions|alerts
+                                         ├──► /api/media/:id                   (range streaming)
+                                         ├──► WebSocket (rooms by appointmentId/planId/userId)
+                                         └──► WebRTC signaling (webrtc.signal relay)
 
-models/ (Python)  ◄──────── WebSocket ──── server/ ──── client/ camera frames
+models/ (Python FastAPI :8000)
+  ├──► POST /score              ◄── landmark frames from client
+  ├──► POST /score-from-video   ◄── video file from server (fallback)
+  └──► WS   /stream             ◄── real-time landmark frames → live feedback
+
+Recording → Transcription → AI Analysis → Rehab Plan → Session → Alert
+   (multer)    (Whisper)     (GPT-4o-mini)  (doctor)   (patient)  (auto)
 ```
 
 **Hard rule**: `server/` is the ONLY place that talks to the database. `website/` and `client/` are pure UI — they call `server/` over HTTP.

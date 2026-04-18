@@ -65,11 +65,13 @@ export default function LoginScreen() {
       await saveAuthUser(user);
       router.replace("/(home)/home");
     } catch (e) {
-      setErrorMsg(
-        e instanceof ApiError
-          ? e.message
-          : "Could not sign in. Please try again."
-      );
+      if (e instanceof ApiError) {
+        setErrorMsg(e.message);
+      } else if (e instanceof TypeError && String(e.message).includes("Network")) {
+        setErrorMsg("Cannot reach the server. Make sure you're on the same Wi-Fi network and the server is running.");
+      } else {
+        setErrorMsg("Could not sign in. Please try again.");
+      }
     } finally {
       setSubmitting(false);
     }

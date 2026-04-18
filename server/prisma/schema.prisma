@@ -71,6 +71,8 @@ model PatientProfile {
   // Relations
   appointments  Appointment[]
   medicalRecords MedicalRecord[]
+  rehabPlans    RehabPlan[]
+  rehabSessions RehabSession[]
 }
 
 // 5. Doctor Profile
@@ -103,6 +105,8 @@ model DoctorProfile {
 
   // Relations
   appointments Appointment[]
+  rehabPlans   RehabPlan[]
+  rehabAlerts  RehabAlert[]
 
   @@index([specialization])
   @@index([city])
@@ -133,6 +137,8 @@ model Appointment {
   // Relations
   prescription Prescription?
   payment      Payment?
+  recording    AppointmentRecording?
+  aiAnalysis   AIAnalysis?
 
   @@index([patientId])
   @@index([doctorId])
@@ -190,4 +196,148 @@ model Message {
 
   sender   User @relation("Sender", fields: [senderId], references: [id])
   receiver User @relation("Receiver", fields: [receiverId], references: [id])
+}
+
+// ─── Tele-Rehab MVP models ────────────────────────────────────────────────────
+
+enum MediaType {
+  AUDIO
+  VIDEO
+}
+
+enum RehabStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+enum SessionStatus {
+  IN_PROGRESS
+  COMPLETED
+  ABANDONED
+}
+
+enum AlertSeverity {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+model AppointmentRecording {
+  id             String      @id @default(uuid())
+  appointmentId  String      @unique
+  appointment    Appointment @relation(fields: [appointmentId], references: [id])
+  mediaType      MediaType
+  mediaUrl       String
+  durationSec    Int?
+  consentPatient Boolean     @default(false)
+  consentDoctor  Boolean     @default(false)
+  createdAt      DateTime    @default(now())
+
+  transcript Transcript?
+}
+
+model Transcript {
+  id          String               @id @default(uuid())
+  recordingId String               @unique
+  recording   AppointmentRecording @relation(fields: [recordingId], references: [id])
+  rawText     String
+  segments    Json                 // Array of { start, end, text }
+  language    String               @default("en")
+  createdAt   DateTime             @default(now())
+}
+
+model AIAnalysis {
+  id                String      @id @default(uuid())
+  appointmentId     String      @unique
+  appointment       Appointment @relation(fields: [appointmentId], references: [id])
+  summary           String
+  keyFindings       Json        // string[]
+  suggestedExercises Json       // SuggestedExercise[]
+  confidence        Float
+  generatedAt       DateTime    @default(now())
+  doctorReviewedAt  DateTime?
+  doctorApproved    Boolean     @default(false)
+
+  rehabPlan RehabPlan?
+}
+
+model RehabPlan {
+  id            String      @id @default(uuid())
+  patientId     String
+  patient       PatientProfile @relation(fields: [patientId], references: [id])
+  doctorId      String
+  doctor        DoctorProfile  @relation(fields: [doctorId], references: [id])
+  appointmentId String?
+  aiAnalysisId  String?     @unique
+  aiAnalysis    AIAnalysis?  @relation(fields: [aiAnalysisId], references: [id])
+  title         String
+  description   String?
+  status        RehabStatus @default(ACTIVE)
+  startedAt     DateTime    @default(now())
+  endsAt        DateTime?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  exercises RehabExercise[]
+  sessions  RehabSession[]
+  alerts    RehabAlert[]
+
+  @@index([patientId])
+  @@index([doctorId])
+}
+
+model RehabExercise {
+  id              String    @id @default(uuid())
+  planId          String
+  plan            RehabPlan @relation(fields: [planId], references: [id])
+  name            String
+  description     String?
+  targetJoint     String
+  targetAngleMin  Float
+  targetAngleMax  Float
+  holdDurationSec Int       @default(3)
+  reps            Int       @default(10)
+  sets            Int       @default(3)
+  videoDemoUrl    String?
+  order           Int       @default(0)
+
+  sessions RehabSession[]
+
+  @@index([planId])
+}
+
+model RehabSession {
+  id            String        @id @default(uuid())
+  planId        String
+  plan          RehabPlan     @relation(fields: [planId], references: [id])
+  exerciseId    String
+  exercise      RehabExercise @relation(fields: [exerciseId], references: [id])
+  patientId     String
+  patient       PatientProfile @relation(fields: [patientId], references: [id])
+  startedAt     DateTime      @default(now())
+  completedAt   DateTime?
+  overallScore  Float?
+  repScores     Json?         // number[]
+  feedbackNotes String?
+  status        SessionStatus @default(IN_PROGRESS)
+
+  @@index([planId])
+  @@index([patientId])
+}
+
+model RehabAlert {
+  id           String        @id @default(uuid())
+  planId       String
+  plan         RehabPlan     @relation(fields: [planId], references: [id])
+  doctorId     String
+  doctor       DoctorProfile @relation(fields: [doctorId], references: [id])
+  severity     AlertSeverity
+  reason       String
+  acknowledged Boolean       @default(false)
+  createdAt    DateTime      @default(now())
+
+  @@index([doctorId])
+  @@index([planId])
 }

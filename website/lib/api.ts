@@ -96,6 +96,31 @@ export const doctors = {
   ) => api.patch<{ message: string; doctor: DoctorProfile }>(`/api/doctors/${id}`, payload),
 };
 
+// ── Appointment types returned by GET /api/appointments?doctorId=...
+export interface AppointmentPatient {
+  id: string;
+  fullName: string;
+  user: { email: string; phone: string | null };
+}
+
+export interface AppointmentRecord {
+  id: string;
+  dateTime: string;
+  status: string;
+  type: string;
+  isFree: boolean;
+  symptoms: string | null;
+  notes: string | null;
+  patient: AppointmentPatient;
+}
+
+export const appointments = {
+  listForDoctor: (doctorId: string) =>
+    api.get<{ count: number; appointments: AppointmentRecord[] }>(
+      `/api/appointments?doctorId=${encodeURIComponent(doctorId)}`
+    ),
+};
+
 export const auth = {
   loginDoctor: (email: string, password: string) =>
     api.post<{ user: AuthUser }>("/api/auth/login", {

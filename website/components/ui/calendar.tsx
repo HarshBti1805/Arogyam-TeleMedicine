@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   format,
@@ -14,7 +14,7 @@ import {
   endOfWeek,
   isToday,
 } from "date-fns";
-import { ChevronLeft, ChevronRight, Clock, User } from "lucide-react";
+import { ChevronLeft, ChevronRight, Clock, Video, MapPin } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export interface Appointment {
@@ -32,7 +32,29 @@ interface CalendarProps {
   onAppointmentClick?: (appointment: Appointment) => void;
 }
 
-export function Calendar({ appointments, onDateSelect, onAppointmentClick }: CalendarProps) {
+/** Sort a list of appointments by their time string ("09:00 AM", "2:30 PM" …) */
+function sortByTime(apts: Appointment[]): Appointment[] {
+  return [...apts].sort((a, b) => {
+    // Parse "hh:mm AM/PM" into a comparable number
+    const toMinutes = (t: string) => {
+      const match = t.match(/(\d+):(\d+)\s*(AM|PM)/i);
+      if (!match) return 0;
+      let h = parseInt(match[1], 10);
+      const m = parseInt(match[2], 10);
+      const period = match[3].toUpperCase();
+      if (period === "PM" && h !== 12) h += 12;
+      if (period === "AM" && h === 12) h = 0;
+      return h * 60 + m;
+    };
+    return toMinutes(a.time) - toMinutes(b.time);
+  });
+}
+
+export function Calendar({
+  appointments,
+  onDateSelect,
+  onAppointmentClick,
+}: CalendarProps) {
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
 
@@ -40,12 +62,20 @@ export function Calendar({ appointments, onDateSelect, onAppointmentClick }: Cal
   const monthEnd = endOfMonth(monthStart);
   const calendarStart = startOfWeek(monthStart);
   const calendarEnd = endOfWeek(monthEnd);
-
   const days = eachDayOfInterval({ start: calendarStart, end: calendarEnd });
 
-  const getAppointmentsForDate = (date: Date) => {
-    return appointments.filter((apt) => isSameDay(apt.date, date));
-  };
+  // Deduplicate by ID once — avoids duplicates from parent re-renders
+  const uniqueAppointments = useMemo(() => {
+    const seen = new Set<string>();
+    return appointments.filter((a) => {
+      if (seen.has(a.id)) return false;
+      seen.add(a.id);
+      return true;
+    });
+  }, [appointments]);
+
+  const getAppointmentsForDate = (date: Date) =>
+    sortByTime(uniqueAppointments.filter((apt) => isSameDay(apt.date, date)));
 
   const handleDateClick = (date: Date) => {
     setSelectedDate(date);
@@ -81,7 +111,7 @@ export function Calendar({ appointments, onDateSelect, onAppointmentClick }: Cal
         </div>
       </div>
 
-      {/* Week Days */}
+      {/* Week day labels */}
       <div className="grid grid-cols-7 bg-neutral-100">
         {weekDays.map((day) => (
           <div
@@ -93,10 +123,10 @@ export function Calendar({ appointments, onDateSelect, onAppointmentClick }: Cal
         ))}
       </div>
 
-      {/* Calendar Grid */}
+      {/* Calendar grid */}
       <div className="grid grid-cols-7">
         {days.map((day, idx) => {
-          const dayAppointments = getAppointmentsForDate(day);
+          const dayApts = getAppointmentsForDate(day);
           const isSelected = selectedDate && isSameDay(day, selectedDate);
           const isCurrentMonth = isSameMonth(day, currentMonth);
           const isDayToday = isToday(day);
@@ -109,29 +139,30 @@ export function Calendar({ appointments, onDateSelect, onAppointmentClick }: Cal
               className={cn(
                 "min-h-[100px] border-b border-r border-neutral-100 p-2 cursor-pointer transition-all duration-200",
                 !isCurrentMonth && "bg-neutral-50/50",
-                isSelected && "bg-neutral-100",
-                isDayToday && "bg-neutral-100"
+                isSelected && "bg-neutral-100 ring-2 ring-inset ring-neutral-400",
+                isDayToday && !isSelected && "bg-blue-50/40"
               )}
             >
               <div className="flex items-center justify-between mb-1">
                 <span
                   className={cn(
-                    "text-sm font-poppins",
-                    !isCurrentMonth && "text-neutral-400",
-                    isDayToday && "font-bold text-neutral-900",
-                    isSelected && "text-neutral-900"
+                    "w-6 h-6 flex items-center justify-center rounded-full text-sm font-poppins",
+                    isDayToday && "bg-neutral-900 text-white font-bold",
+                    !isDayToday && !isCurrentMonth && "text-neutral-400",
+                    !isDayToday && isCurrentMonth && "text-neutral-700"
                   )}
                 >
                   {format(day, "d")}
                 </span>
-                {isDayToday && (
-                  <span className="text-xs bg-neutral-900 text-white px-2 py-0.5 rounded-full font-poppins">
-                    Today
+                {dayApts.length > 0 && (
+                  <span className="text-xs bg-neutral-900 text-white w-4 h-4 rounded-full flex items-center justify-center font-bold">
+                    {dayApts.length}
                   </span>
                 )}
               </div>
+
               <div className="space-y-1">
-                {dayAppointments.slice(0, 2).map((apt) => (
+                {dayApts.slice(0, 2).map((apt) => (
                   <motion.div
                     key={apt.id}
                     whileHover={{ scale: 1.02 }}
@@ -139,17 +170,15 @@ export function Calendar({ appointments, onDateSelect, onAppointmentClick }: Cal
                       e.stopPropagation();
                       onAppointmentClick?.(apt);
                     }}
-                    className={cn(
-                      "text-xs p-1.5 rounded-lg truncate cursor-pointer transition-all",
-                      apt.color || "bg-neutral-200 text-neutral-800 hover:bg-neutral-300"
-                    )}
+                    className="text-xs p-1.5 rounded-lg truncate cursor-pointer bg-neutral-200 text-neutral-800 hover:bg-neutral-300 transition-all"
                   >
-                    <span className="font-semibold">{apt.time}</span> - {apt.patientName}
+                    <span className="font-semibold">{apt.time}</span>{" "}
+                    <span className="opacity-80">{apt.patientName}</span>
                   </motion.div>
                 ))}
-                {dayAppointments.length > 2 && (
-                  <div className="text-xs text-neutral-700 font-medium pl-1">
-                    +{dayAppointments.length - 2} more
+                {dayApts.length > 2 && (
+                  <div className="text-xs text-neutral-500 font-medium pl-1">
+                    +{dayApts.length - 2} more
                   </div>
                 )}
               </div>
@@ -158,7 +187,7 @@ export function Calendar({ appointments, onDateSelect, onAppointmentClick }: Cal
         })}
       </div>
 
-      {/* Selected Date Details */}
+      {/* Selected date agenda */}
       <AnimatePresence>
         {selectedDate && (
           <motion.div
@@ -171,36 +200,62 @@ export function Calendar({ appointments, onDateSelect, onAppointmentClick }: Cal
               <h3 className="font-neue-bold text-lg text-neutral-900 mb-4">
                 {format(selectedDate, "EEEE, MMMM d, yyyy")}
               </h3>
-              <div className="space-y-3">
-                {getAppointmentsForDate(selectedDate).length > 0 ? (
-                  getAppointmentsForDate(selectedDate).map((apt) => (
+
+              {getAppointmentsForDate(selectedDate).length === 0 ? (
+                <p className="text-neutral-400 font-poppins text-sm text-center py-6">
+                  No appointments scheduled for this day.
+                </p>
+              ) : (
+                <div className="relative pl-6 space-y-0">
+                  {/* Vertical timeline line */}
+                  <div className="absolute left-2 top-2 bottom-2 w-px bg-neutral-300" />
+
+                  {getAppointmentsForDate(selectedDate).map((apt, idx) => (
                     <motion.div
                       key={apt.id}
                       initial={{ x: -20, opacity: 0 }}
                       animate={{ x: 0, opacity: 1 }}
-                      className="flex items-center gap-4 p-4 bg-white rounded-xl shadow-sm border border-neutral-200"
+                      transition={{ delay: idx * 0.06 }}
+                      onClick={() => onAppointmentClick?.(apt)}
+                      className="relative flex items-start gap-4 py-3 cursor-pointer group"
                     >
-                      <div className="w-12 h-12 rounded-full bg-neutral-900 flex items-center justify-center text-white font-neue-bold">
-                        {apt.patientName.charAt(0)}
-                      </div>
-                      <div className="flex-1">
-                        <p className="font-neue-bold text-neutral-900">{apt.patientName}</p>
-                        <p className="text-sm text-neutral-600 font-poppins">{apt.type}</p>
-                      </div>
-                      <div className="text-right">
-                        <div className="flex items-center gap-1 text-neutral-900 font-semibold">
-                          <Clock className="w-4 h-4" />
-                          {apt.time}
+                      {/* Timeline dot */}
+                      <div className="absolute -left-4 top-4 w-2.5 h-2.5 rounded-full bg-neutral-900 ring-2 ring-neutral-50 shrink-0" />
+
+                      <div className="flex-1 bg-white rounded-xl shadow-sm border border-neutral-200 p-4 group-hover:border-neutral-400 transition-colors">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="w-9 h-9 rounded-full bg-neutral-900 flex items-center justify-center text-white font-semibold text-sm shrink-0">
+                              {apt.patientName.charAt(0)}
+                            </div>
+                            <div>
+                              <p className="font-neue-bold text-neutral-900">
+                                {apt.patientName}
+                              </p>
+                              <div className="flex items-center gap-2 mt-0.5">
+                                {apt.type === "Video Call" || apt.type === "ONLINE" ? (
+                                  <Video className="w-3 h-3 text-blue-500" />
+                                ) : (
+                                  <MapPin className="w-3 h-3 text-green-600" />
+                                )}
+                                <span className="text-xs text-neutral-500 font-poppins">
+                                  {apt.type}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1.5 text-neutral-700 shrink-0">
+                            <Clock className="w-3.5 h-3.5" />
+                            <span className="text-sm font-semibold font-poppins">
+                              {apt.time}
+                            </span>
+                          </div>
                         </div>
                       </div>
                     </motion.div>
-                  ))
-                ) : (
-                  <p className="text-neutral-500 font-poppins text-center py-4">
-                    No appointments scheduled for this day
-                  </p>
-                )}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
           </motion.div>
         )}

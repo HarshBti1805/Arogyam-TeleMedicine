@@ -1,23 +1,24 @@
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { useRouter } from "next/navigation";
+import { motion } from "framer-motion";
 import Link from "next/link";
-import { doctors as doctorsApi, ApiError } from "@/lib/api";
+import {
+  doctors as doctorsApi,
+  appointments as appointmentsApi,
+  ApiError,
+  type AppointmentRecord,
+} from "@/lib/api";
 import { loadAuthUser, saveAuthUser } from "@/lib/auth-storage";
 import {
-  PieChart,
-  Pie,
-  Cell,
+  AreaChart,
+  Area,
   XAxis,
   YAxis,
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  AreaChart,
-  Area,
-  LineChart,
-  Line,
 } from "recharts";
 import { Calendar, type Appointment } from "@/components/ui/calendar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,604 +26,191 @@ import { Button } from "@/components/ui/button";
 import {
   Users,
   Calendar as CalendarIcon,
-  FileText,
-  DollarSign,
-  Bell,
   Settings,
   LogOut,
-  TrendingUp,
   Clock,
-  Video,
-  Pill,
   Search,
-  Plus,
   ChevronRight,
   Stethoscope,
   Home,
-  User,
-  BarChart3,
-  MessageCircle,
-  Phone,
-  VideoIcon,
-  Send,
-  Paperclip,
-  Smile,
-  MoreVertical,
-  ChevronLeft,
-  Mail,
-  Heart,
   Activity,
-  Mic,
-  MicOff,
-  VideoOff,
-  PhoneOff,
-  Monitor,
-  Filter,
-  Download,
-  Eye,
-  Edit,
   CheckCircle,
+  Mail,
+  Phone,
   AlertCircle,
-  XCircle,
+  TrendingUp,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-// Patient interface
-interface Patient {
+const API_BASE =
+  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "http://localhost:5000";
+
+// ── Derived patient shape ────────────────────────────────────────────────────
+interface DerivedPatient {
   id: string;
-  name: string;
+  fullName: string;
   email: string;
-  phone: string;
-  age: number;
-  gender: "Male" | "Female" | "Other";
-  bloodType: string;
-  address: string;
-  lastVisit: string;
-  condition: string;
-  status: "Active" | "Inactive" | "Critical";
-  avatar?: string;
+  phone: string | null;
+  appointmentCount: number;
+  lastAppointment: Date;
+  lastStatus: string;
 }
 
-// Chat message interface
-interface ChatMessage {
-  id: string;
-  sender: "doctor" | "patient";
-  content: string;
-  timestamp: string;
-  type: "text" | "image" | "file";
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function derivePatients(appts: AppointmentRecord[]): DerivedPatient[] {
+  const map = new Map<string, DerivedPatient>();
+  for (const a of appts) {
+    const p = a.patient;
+    const existing = map.get(p.id);
+    const dt = new Date(a.dateTime);
+    if (!existing) {
+      map.set(p.id, {
+        id: p.id,
+        fullName: p.fullName,
+        email: p.user.email,
+        phone: p.user.phone,
+        appointmentCount: 1,
+        lastAppointment: dt,
+        lastStatus: a.status,
+      });
+    } else {
+      existing.appointmentCount += 1;
+      if (dt > existing.lastAppointment) {
+        existing.lastAppointment = dt;
+        existing.lastStatus = a.status;
+      }
+    }
+  }
+  return Array.from(map.values()).sort((a, b) =>
+    b.lastAppointment.getTime() - a.lastAppointment.getTime()
+  );
 }
 
-// Prescription interface
-interface Prescription {
-  id: string;
-  patientName: string;
-  patientId: string;
-  medication: string;
-  dosage: string;
-  frequency: string;
-  duration: string;
-  date: string;
-  status: "Active" | "Completed" | "Cancelled";
-  notes?: string;
+function mapToCalendarAppointment(a: AppointmentRecord): Appointment {
+  const dt = new Date(a.dateTime);
+  return {
+    id: a.id,
+    patientName: a.patient.fullName,
+    time: dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    type: a.type === "ONLINE" ? "Video Call" : "In-Person",
+    date: dt,
+    color: "bg-neutral-200 text-neutral-800",
+  };
 }
 
+function initials(name: string) {
+  return name
+    .split(" ")
+    .map((w) => w[0])
+    .join("")
+    .toUpperCase()
+    .slice(0, 2);
+}
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
 export default function Dashboard() {
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState<string>("overview");
-  const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
-  const [consultationMode, setConsultationMode] = useState<
-    "chat" | "video" | null
-  >(null);
-  const [chatMessage, setChatMessage] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
-  const [patientFilter, setPatientFilter] = useState<
-    "all" | "active" | "inactive" | "critical"
-  >("all");
-  const [isVideoCallActive, setIsVideoCallActive] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
-  const [isVideoOff, setIsVideoOff] = useState(false);
 
-  // Sample patients data
-  const patients: Patient[] = useMemo(
-    () => [
-      {
-        id: "1",
-        name: "Sarah Johnson",
-        email: "sarah.j@email.com",
-        phone: "+1 234 567 8901",
-        age: 32,
-        gender: "Female",
-        bloodType: "A+",
-        address: "123 Main St, New York",
-        lastVisit: "2024-01-15",
-        condition: "Diabetes Type 2",
-        status: "Active",
-      },
-      {
-        id: "2",
-        name: "Michael Chen",
-        email: "michael.c@email.com",
-        phone: "+1 234 567 8902",
-        age: 45,
-        gender: "Male",
-        bloodType: "B+",
-        address: "456 Oak Ave, Los Angeles",
-        lastVisit: "2024-01-14",
-        condition: "Hypertension",
-        status: "Active",
-      },
-      {
-        id: "3",
-        name: "Emily Davis",
-        email: "emily.d@email.com",
-        phone: "+1 234 567 8903",
-        age: 28,
-        gender: "Female",
-        bloodType: "O-",
-        address: "789 Pine Rd, Chicago",
-        lastVisit: "2024-01-13",
-        condition: "Anxiety Disorder",
-        status: "Active",
-      },
-      {
-        id: "4",
-        name: "Robert Wilson",
-        email: "robert.w@email.com",
-        phone: "+1 234 567 8904",
-        age: 55,
-        gender: "Male",
-        bloodType: "AB+",
-        address: "321 Elm St, Houston",
-        lastVisit: "2024-01-12",
-        condition: "Heart Disease",
-        status: "Critical",
-      },
-      {
-        id: "5",
-        name: "Lisa Anderson",
-        email: "lisa.a@email.com",
-        phone: "+1 234 567 8905",
-        age: 38,
-        gender: "Female",
-        bloodType: "A-",
-        address: "654 Maple Dr, Phoenix",
-        lastVisit: "2024-01-10",
-        condition: "Asthma",
-        status: "Active",
-      },
-      {
-        id: "6",
-        name: "James Brown",
-        email: "james.b@email.com",
-        phone: "+1 234 567 8906",
-        age: 62,
-        gender: "Male",
-        bloodType: "O+",
-        address: "987 Cedar Ln, Philadelphia",
-        lastVisit: "2024-01-08",
-        condition: "Arthritis",
-        status: "Inactive",
-      },
-      {
-        id: "7",
-        name: "Patricia Garcia",
-        email: "patricia.g@email.com",
-        phone: "+1 234 567 8907",
-        age: 41,
-        gender: "Female",
-        bloodType: "B-",
-        address: "147 Birch Blvd, San Antonio",
-        lastVisit: "2024-01-05",
-        condition: "Migraine",
-        status: "Active",
-      },
-      {
-        id: "8",
-        name: "David Martinez",
-        email: "david.m@email.com",
-        phone: "+1 234 567 8908",
-        age: 35,
-        gender: "Male",
-        bloodType: "A+",
-        address: "258 Walnut Way, San Diego",
-        lastVisit: "2024-01-03",
-        condition: "Back Pain",
-        status: "Active",
-      },
-      {
-        id: "9",
-        name: "Jennifer Lee",
-        email: "jennifer.l@email.com",
-        phone: "+1 234 567 8909",
-        age: 29,
-        gender: "Female",
-        bloodType: "AB-",
-        address: "369 Spruce St, Dallas",
-        lastVisit: "2024-01-01",
-        condition: "Allergies",
-        status: "Inactive",
-      },
-      {
-        id: "10",
-        name: "William Taylor",
-        email: "william.t@email.com",
-        phone: "+1 234 567 8910",
-        age: 48,
-        gender: "Male",
-        bloodType: "O+",
-        address: "741 Oak Dr, San Jose",
-        lastVisit: "2023-12-28",
-        condition: "COPD",
-        status: "Critical",
-      },
-    ],
-    [],
-  );
+  // Doctor identity — must be state so server and client first-render both start
+  // with the same default ("Doctor"), then useEffect populates from localStorage.
+  // Reading localStorage directly during render causes an SSR/client hydration mismatch.
+  const [doctorName, setDoctorName] = useState("Doctor");
+  const [doctorInitials, setDoctorInitials] = useState("DR");
+  const [doctorId, setDoctorId] = useState<string | undefined>(undefined);
 
-  // Sample chat messages
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
-    {
-      id: "1",
-      sender: "patient",
-      content:
-        "Hello Dr. Smith, I have been experiencing some headaches lately.",
-      timestamp: "10:30 AM",
-      type: "text",
-    },
-    {
-      id: "2",
-      sender: "doctor",
-      content:
-        "Hello! I am sorry to hear that. How long have you been experiencing these headaches?",
-      timestamp: "10:32 AM",
-      type: "text",
-    },
-    {
-      id: "3",
-      sender: "patient",
-      content:
-        "It started about a week ago. They usually occur in the afternoon.",
-      timestamp: "10:33 AM",
-      type: "text",
-    },
-    {
-      id: "4",
-      sender: "doctor",
-      content:
-        "I see. Are you staying hydrated? Sometimes dehydration can cause afternoon headaches.",
-      timestamp: "10:35 AM",
-      type: "text",
-    },
-    {
-      id: "5",
-      sender: "patient",
-      content:
-        "I try to drink water but maybe not enough. I will try to increase my intake.",
-      timestamp: "10:36 AM",
-      type: "text",
-    },
-  ]);
+  const [apiAppointments, setApiAppointments] = useState<AppointmentRecord[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  // Sample prescriptions data
-  const prescriptions: Prescription[] = useMemo(
-    () => [
-      {
-        id: "1",
-        patientName: "Sarah Johnson",
-        patientId: "1",
-        medication: "Metformin 500mg",
-        dosage: "1 tablet",
-        frequency: "Twice daily",
-        duration: "30 days",
-        date: "2024-01-15",
-        status: "Active",
-        notes: "Take with meals",
-      },
-      {
-        id: "2",
-        patientName: "Michael Chen",
-        patientId: "2",
-        medication: "Lisinopril 10mg",
-        dosage: "1 tablet",
-        frequency: "Once daily",
-        duration: "30 days",
-        date: "2024-01-14",
-        status: "Active",
-        notes: "Take in the morning",
-      },
-      {
-        id: "3",
-        patientName: "Emily Davis",
-        patientId: "3",
-        medication: "Sertraline 50mg",
-        dosage: "1 tablet",
-        frequency: "Once daily",
-        duration: "60 days",
-        date: "2024-01-13",
-        status: "Active",
-        notes: "Take with or without food",
-      },
-      {
-        id: "4",
-        patientName: "Robert Wilson",
-        patientId: "4",
-        medication: "Aspirin 81mg",
-        dosage: "1 tablet",
-        frequency: "Once daily",
-        duration: "90 days",
-        date: "2024-01-12",
-        status: "Active",
-        notes: "Take with food",
-      },
-      {
-        id: "5",
-        patientName: "Lisa Anderson",
-        patientId: "5",
-        medication: "Albuterol Inhaler",
-        dosage: "2 puffs",
-        frequency: "As needed",
-        duration: "30 days",
-        date: "2024-01-10",
-        status: "Active",
-        notes: "Use for shortness of breath",
-      },
-      {
-        id: "6",
-        patientName: "James Brown",
-        patientId: "6",
-        medication: "Ibuprofen 400mg",
-        dosage: "1 tablet",
-        frequency: "Three times daily",
-        duration: "14 days",
-        date: "2024-01-08",
-        status: "Completed",
-      },
-      {
-        id: "7",
-        patientName: "Patricia Garcia",
-        patientId: "7",
-        medication: "Sumatriptan 50mg",
-        dosage: "1 tablet",
-        frequency: "As needed",
-        duration: "30 days",
-        date: "2024-01-05",
-        status: "Active",
-        notes: "Take at onset of migraine",
-      },
-    ],
-    [],
-  );
+  useEffect(() => {
+    // Safe to call localStorage only inside useEffect (runs client-side only)
+    const user = loadAuthUser();
+    const name: string = user?.doctorProfile?.fullName ?? "Doctor";
+    const dId: string | undefined = user?.doctorProfile?.id;
 
-  const stats = [
-    {
-      title: "Total Patients",
-      value: "1,247",
-      change: "+12%",
-      changeType: "positive",
-      icon: Users,
-    },
-    {
-      title: "Today&apos;s Appointments",
-      value: "18",
-      change: "3 upcoming",
-      changeType: "neutral",
-      icon: CalendarIcon,
-    },
-    {
-      title: "Pending Prescriptions",
-      value: "7",
-      change: "Requires action",
-      changeType: "warning",
-      icon: Pill,
-    },
-    {
-      title: "Monthly Revenue",
-      value: "$45,600",
-      change: "+8%",
-      changeType: "positive",
-      icon: DollarSign,
-    },
-  ];
+    setDoctorName(name);
+    setDoctorInitials(initials(name));
+    setDoctorId(dId);
 
-  // Use useMemo to avoid impure function calls during render
-  const appointments: Appointment[] = useMemo(() => {
-    const today = new Date();
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const dayAfter = new Date(today);
-    dayAfter.setDate(dayAfter.getDate() + 2);
+    if (!dId) {
+      setLoading(false);
+      return;
+    }
 
-    return [
-      {
-        id: "1",
-        patientName: "Sarah Johnson",
-        time: "9:00 AM",
-        type: "Consultation",
-        date: today,
-        color: "bg-neutral-200 text-neutral-800",
-      },
-      {
-        id: "2",
-        patientName: "Michael Chen",
-        time: "10:30 AM",
-        type: "Follow-up",
-        date: today,
-        color: "bg-neutral-200 text-neutral-800",
-      },
-      {
-        id: "3",
-        patientName: "Emily Davis",
-        time: "11:15 AM",
-        type: "Check-up",
-        date: today,
-        color: "bg-neutral-200 text-neutral-800",
-      },
-      {
-        id: "4",
-        patientName: "Robert Wilson",
-        time: "2:00 PM",
-        type: "Consultation",
-        date: today,
-        color: "bg-neutral-200 text-neutral-800",
-      },
-      {
-        id: "5",
-        patientName: "Lisa Anderson",
-        time: "3:30 PM",
-        type: "Video Call",
-        date: today,
-        color: "bg-neutral-200 text-neutral-800",
-      },
-      {
-        id: "6",
-        patientName: "James Brown",
-        time: "9:30 AM",
-        type: "Consultation",
-        date: tomorrow,
-        color: "bg-neutral-200 text-neutral-800",
-      },
-      {
-        id: "7",
-        patientName: "Patricia Garcia",
-        time: "11:00 AM",
-        type: "Follow-up",
-        date: tomorrow,
-        color: "bg-neutral-200 text-neutral-800",
-      },
-      {
-        id: "8",
-        patientName: "David Martinez",
-        time: "10:00 AM",
-        type: "Check-up",
-        date: dayAfter,
-        color: "bg-neutral-200 text-neutral-800",
-      },
-      {
-        id: "9",
-        patientName: "Jennifer Lee",
-        time: "2:30 PM",
-        type: "Video Call",
-        date: dayAfter,
-        color: "bg-neutral-200 text-neutral-800",
-      },
-      {
-        id: "10",
-        patientName: "William Taylor",
-        time: "4:00 PM",
-        type: "Consultation",
-        date: dayAfter,
-        color: "bg-neutral-200 text-neutral-800",
-      },
-    ];
+    appointmentsApi
+      .listForDoctor(dId)
+      .then(({ appointments }) => setApiAppointments(appointments))
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, []);
 
-  const appointmentData = [
-    { name: "Mon", appointments: 12 },
-    { name: "Tue", appointments: 19 },
-    { name: "Wed", appointments: 15 },
-    { name: "Thu", appointments: 22 },
-    { name: "Fri", appointments: 18 },
-    { name: "Sat", appointments: 8 },
-    { name: "Sun", appointments: 5 },
-  ];
+  const patients = useMemo(() => derivePatients(apiAppointments), [apiAppointments]);
 
-  const patientAgeData = [
-    { name: "0-18", value: 15 },
-    { name: "19-35", value: 35 },
-    { name: "36-50", value: 28 },
-    { name: "51-65", value: 18 },
-    { name: "65+", value: 4 },
-  ];
+  const calendarAppointments = useMemo(
+    () => apiAppointments.map(mapToCalendarAppointment),
+    [apiAppointments]
+  );
 
-  const revenueData = [
-    { name: "Jan", revenue: 42000, patients: 180 },
-    { name: "Feb", revenue: 38000, patients: 165 },
-    { name: "Mar", revenue: 45000, patients: 195 },
-    { name: "Apr", revenue: 41000, patients: 175 },
-    { name: "May", revenue: 48000, patients: 210 },
-    { name: "Jun", revenue: 45600, patients: 200 },
-  ];
+  const todayAppointments = useMemo(() => {
+    const today = new Date();
+    return apiAppointments.filter((a) => {
+      const d = new Date(a.dateTime);
+      return (
+        d.getFullYear() === today.getFullYear() &&
+        d.getMonth() === today.getMonth() &&
+        d.getDate() === today.getDate()
+      );
+    });
+  }, [apiAppointments]);
 
-  const consultationTypeData = [
-    { name: "In-Person", value: 45 },
-    { name: "Video Call", value: 35 },
-    { name: "Phone", value: 20 },
-  ];
+  const upcomingToday = useMemo(
+    () =>
+      todayAppointments
+        .filter((a) => new Date(a.dateTime) >= new Date())
+        .sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime())
+        .slice(0, 5),
+    [todayAppointments]
+  );
 
-  const COLORS = ["#171717", "#404040", "#737373", "#a3a3a3", "#d4d4d4"];
-  const CONSULTATION_COLORS = ["#171717", "#525252", "#a3a3a3"];
+  const filteredPatients = useMemo(() => {
+    const q = searchQuery.toLowerCase();
+    if (!q) return patients;
+    return patients.filter(
+      (p) =>
+        p.fullName.toLowerCase().includes(q) ||
+        p.email.toLowerCase().includes(q)
+    );
+  }, [patients, searchQuery]);
+
+  const greet = useMemo(() => {
+    const h = new Date().getHours();
+    if (h < 12) return "Good morning";
+    if (h < 17) return "Good afternoon";
+    return "Good evening";
+  }, []);
 
   const sidebarItems = [
     { icon: Home, label: "Overview", id: "overview" },
     { icon: CalendarIcon, label: "Calendar", id: "calendar" },
     { icon: Users, label: "Patients", id: "patients" },
-    { icon: Video, label: "Consultations", id: "consultations" },
-    { icon: Pill, label: "Prescriptions", id: "prescriptions" },
-    { icon: BarChart3, label: "Analytics", id: "analytics" },
+    { icon: Activity, label: "Rehab", id: "rehab" },
   ];
 
-  const upcomingAppointments = useMemo(() => {
-    return appointments
-      .filter((apt) => {
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const aptDate = new Date(apt.date);
-        aptDate.setHours(0, 0, 0, 0);
-        return aptDate.getTime() === today.getTime();
-      })
-      .slice(0, 4);
-  }, [appointments]);
-
-  // Filter patients based on search and filter
-  const filteredPatients = useMemo(() => {
-    return patients.filter((patient) => {
-      const matchesSearch =
-        patient.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        patient.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        patient.condition.toLowerCase().includes(searchQuery.toLowerCase());
-      const matchesFilter =
-        patientFilter === "all" ||
-        patient.status.toLowerCase() === patientFilter;
-      return matchesSearch && matchesFilter;
-    });
-  }, [patients, searchQuery, patientFilter]);
-
-  // Handle sending chat message
-  const handleSendMessage = () => {
-    if (chatMessage.trim()) {
-      const newMessage: ChatMessage = {
-        id: String(chatMessages.length + 1),
-        sender: "doctor",
-        content: chatMessage,
-        timestamp: new Date().toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
-        type: "text",
-      };
-      setChatMessages([...chatMessages, newMessage]);
-      setChatMessage("");
+  // ── Appointment count by day-of-week for overview chart (last 7 days from real data)
+  const weeklyChartData = useMemo(() => {
+    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const counts = new Array(7).fill(0);
+    const now = new Date();
+    for (const a of apiAppointments) {
+      const d = new Date(a.dateTime);
+      const diffMs = now.getTime() - d.getTime();
+      if (diffMs >= 0 && diffMs < 7 * 24 * 60 * 60 * 1000) {
+        counts[d.getDay()] += 1;
+      }
     }
-  };
-
-  // Handle patient selection for consultation
-  const handleStartConsultation = (
-    patient: Patient,
-    mode: "chat" | "video",
-  ) => {
-    setSelectedPatient(patient);
-    setConsultationMode(mode);
-    if (mode === "video") {
-      setIsVideoCallActive(true);
-    }
-  };
-
-  // Handle ending video call
-  const handleEndCall = () => {
-    setIsVideoCallActive(false);
-    setConsultationMode(null);
-    setIsMuted(false);
-    setIsVideoOff(false);
-  };
+    return days.map((name, i) => ({ name, appointments: counts[i] }));
+  }, [apiAppointments]);
 
   return (
     <div className="min-h-screen bg-neutral-50 flex">
@@ -636,9 +224,7 @@ export default function Dashboard() {
           <div className="w-10 h-10 rounded-xl bg-neutral-900 flex items-center justify-center">
             <Stethoscope className="w-6 h-6 text-white" />
           </div>
-          <span className="text-xl font-semibold text-neutral-900">
-            Arogyam
-          </span>
+          <span className="text-xl font-semibold text-neutral-900">Arogyam</span>
         </div>
 
         <nav className="flex-1 space-y-2">
@@ -651,7 +237,7 @@ export default function Dashboard() {
                 "w-full flex items-center gap-3 px-4 py-3 rounded-xl font-poppins transition-all duration-200",
                 activeTab === item.id
                   ? "bg-neutral-900 text-white"
-                  : "text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900",
+                  : "text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900"
               )}
             >
               <item.icon className="w-5 h-5" />
@@ -684,10 +270,9 @@ export default function Dashboard() {
 
       {/* Main Content */}
       <main className="flex-1 ml-72 p-8">
-        {/* Overview Tab */}
+        {/* ── Overview Tab ─────────────────────────────────────────────────── */}
         {activeTab === "overview" && (
           <>
-            {/* Header */}
             <motion.header
               initial={{ y: -20, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
@@ -695,297 +280,211 @@ export default function Dashboard() {
             >
               <div>
                 <h1 className="text-4xl font-neue-bold text-neutral-900">
-                  Good Morning, Dr. Smith
+                  {greet}, Dr. {doctorName.split(" ").at(-1)}
                 </h1>
                 <p className="text-neutral-600 font-poppins mt-1">
-                  Here&apos;s what&apos;s happening with your practice today.
+                  Here&apos;s your practice summary for today.
                 </p>
               </div>
               <div className="flex items-center gap-4">
-                <div className="relative">
-                  <Search className="w-5 h-5 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="text"
-                    placeholder="Search patients..."
-                    className="pl-10 pr-4 py-2.5 rounded-xl border border-neutral-300 bg-white font-poppins focus:ring-2 focus:ring-neutral-400 focus:border-neutral-500 outline-none w-64 text-neutral-900"
-                  />
-                </div>
-                <Button variant="outline" size="icon" className="relative">
-                  <Bell className="w-5 h-5" />
-                  <span className="absolute -top-1 -right-1 w-4 h-4 bg-neutral-900 rounded-full text-white text-xs flex items-center justify-center">
-                    3
-                  </span>
-                </Button>
                 <div className="w-11 h-11 rounded-full bg-neutral-900 flex items-center justify-center text-white font-semibold">
-                  DS
+                  {doctorInitials}
                 </div>
               </div>
             </motion.header>
-            {/* Stats Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-              {stats.map((stat, idx) => (
-                <motion.div
-                  key={idx}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: idx * 0.1 }}
-                  whileHover={{ scale: 1.02, y: -5 }}
-                  className="bg-white rounded-2xl p-6 border border-neutral-200 shadow-sm hover:shadow-md transition-all duration-200"
-                >
-                  <div className="flex items-center justify-between mb-4">
-                    <h3
-                      className="text-neutral-600 font-poppins text-sm"
-                      dangerouslySetInnerHTML={{ __html: stat.title }}
-                    />
-                    <div className="p-3 rounded-xl bg-neutral-900">
-                      <stat.icon className="w-5 h-5 text-white" />
-                    </div>
-                  </div>
-                  <p className="text-3xl font-neue-bold text-neutral-900 mb-2">
-                    {stat.value}
-                  </p>
-                  <p
-                    className={cn(
-                      "text-sm font-poppins",
-                      stat.changeType === "positive" && "text-neutral-900",
-                      stat.changeType === "warning" && "text-neutral-600",
-                      stat.changeType === "neutral" && "text-neutral-500",
-                    )}
-                  >
-                    {stat.change}
-                  </p>
-                </motion.div>
-              ))}
-            </div>
 
-            {/* Charts and Appointments */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-              {/* Weekly Appointments Chart */}
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.4 }}
-                className="lg:col-span-2 bg-white rounded-2xl p-6 border border-neutral-200 shadow-sm"
-              >
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-xl font-neue-bold text-neutral-900">
-                    Weekly Appointments
-                  </h3>
-                  <div className="flex items-center gap-2 text-neutral-900">
-                    <TrendingUp className="w-4 h-4" />
-                    <span className="text-sm font-poppins">+15% this week</span>
-                  </div>
-                </div>
-                <ResponsiveContainer width="100%" height={280}>
-                  <AreaChart data={appointmentData}>
-                    <defs>
-                      <linearGradient
-                        id="colorAppointments"
-                        x1="0"
-                        y1="0"
-                        x2="0"
-                        y2="1"
-                      >
-                        <stop
-                          offset="5%"
-                          stopColor="#171717"
-                          stopOpacity={0.2}
-                        />
-                        <stop
-                          offset="95%"
-                          stopColor="#171717"
-                          stopOpacity={0}
-                        />
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid
-                      strokeDasharray="3 3"
-                      stroke="#e5e7eb"
-                      opacity={0.5}
-                    />
-                    <XAxis dataKey="name" stroke="#6b7280" fontSize={12} />
-                    <YAxis stroke="#6b7280" fontSize={12} />
-                    <Tooltip
-                      contentStyle={{
-                        backgroundColor: "rgba(255, 255, 255, 0.95)",
-                        border: "none",
-                        borderRadius: "12px",
-                        boxShadow: "0 10px 40px rgba(0,0,0,0.1)",
-                      }}
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="appointments"
-                      stroke="#171717"
-                      strokeWidth={3}
-                      fill="url(#colorAppointments)"
-                    />
-                  </AreaChart>
-                </ResponsiveContainer>
-              </motion.div>
-
-              {/* Upcoming Appointments */}
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.5 }}
-                className="bg-white rounded-2xl p-6 border border-neutral-200 shadow-sm"
-              >
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-xl font-neue-bold text-neutral-900">
-                    Upcoming
-                  </h3>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="text-neutral-900 hover:text-neutral-900"
-                  >
-                    View All <ChevronRight className="w-4 h-4 ml-1" />
-                  </Button>
-                </div>
-                <div className="space-y-4">
-                  {upcomingAppointments.map((apt, idx) => (
+            {/* Stats */}
+            {loading ? (
+              <div className="h-32 flex items-center justify-center">
+                <div className="w-8 h-8 border-2 border-neutral-900 border-t-transparent rounded-full animate-spin" />
+              </div>
+            ) : (
+              <>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+                  {[
+                    {
+                      label: "Total Patients",
+                      value: patients.length,
+                      icon: Users,
+                      sub: "unique patients",
+                    },
+                    {
+                      label: "Today's Appointments",
+                      value: todayAppointments.length,
+                      icon: CalendarIcon,
+                      sub: `${upcomingToday.length} still upcoming`,
+                    },
+                    {
+                      label: "Total Appointments",
+                      value: apiAppointments.length,
+                      icon: Activity,
+                      sub: "all time",
+                    },
+                  ].map((stat, idx) => (
                     <motion.div
-                      key={apt.id}
-                      initial={{ opacity: 0, x: -20 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: 0.6 + idx * 0.1 }}
-                      className="flex items-center gap-4 p-3 rounded-xl hover:bg-neutral-100 transition-colors cursor-pointer"
+                      key={idx}
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: idx * 0.1 }}
+                      className="bg-white rounded-2xl p-6 border border-neutral-200 shadow-sm"
                     >
-                      <div className="w-10 h-10 rounded-full bg-neutral-900 flex items-center justify-center text-white font-semibold text-sm">
-                        {apt.patientName.charAt(0)}
+                      <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-neutral-600 font-poppins text-sm">
+                          {stat.label}
+                        </h3>
+                        <div className="p-3 rounded-xl bg-neutral-900">
+                          <stat.icon className="w-5 h-5 text-white" />
+                        </div>
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="font-neue-bold text-neutral-900 truncate">
-                          {apt.patientName}
-                        </p>
-                        <p className="text-xs text-neutral-500 font-poppins">
-                          {apt.type}
-                        </p>
-                      </div>
-                      <div className="flex items-center gap-1 text-neutral-700">
-                        <Clock className="w-3 h-3" />
-                        <span className="text-sm font-poppins">{apt.time}</span>
-                      </div>
+                      <p className="text-3xl font-neue-bold text-neutral-900 mb-1">
+                        {stat.value}
+                      </p>
+                      <p className="text-sm text-neutral-500 font-poppins">{stat.sub}</p>
                     </motion.div>
                   ))}
                 </div>
-              </motion.div>
-            </div>
 
-            {/* Bottom Row */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Patient Age Distribution */}
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.6 }}
-                className="bg-white rounded-2xl p-6 border border-neutral-200 shadow-sm"
-              >
-                <h3 className="text-xl font-neue-bold text-neutral-900 mb-6">
-                  Patient Demographics
-                </h3>
-                <ResponsiveContainer width="100%" height={250}>
-                  <PieChart>
-                    <Pie
-                      data={patientAgeData}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={60}
-                      outerRadius={100}
-                      paddingAngle={5}
-                      dataKey="value"
-                    >
-                      {patientAgeData.map((entry, index) => (
-                        <Cell
-                          key={`cell-${index}`}
-                          fill={COLORS[index % COLORS.length]}
-                        />
-                      ))}
-                    </Pie>
-                    <Tooltip
-                      contentStyle={{
-                        backgroundColor: "rgba(255, 255, 255, 0.95)",
-                        border: "none",
-                        borderRadius: "12px",
-                        boxShadow: "0 10px 40px rgba(0,0,0,0.1)",
-                      }}
-                    />
-                  </PieChart>
-                </ResponsiveContainer>
-                <div className="flex flex-wrap justify-center gap-4 mt-4">
-                  {patientAgeData.map((entry, idx) => (
-                    <div key={idx} className="flex items-center gap-2">
-                      <div
-                        className="w-3 h-3 rounded-full"
-                        style={{ backgroundColor: COLORS[idx] }}
-                      />
-                      <span className="text-sm text-neutral-600 font-poppins">
-                        {entry.name}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </motion.div>
-
-              {/* Quick Actions */}
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.7 }}
-                className="bg-white rounded-2xl p-6 border border-neutral-200 shadow-sm"
-              >
-                <h3 className="text-xl font-neue-bold text-neutral-900 mb-6">
-                  Quick Actions
-                </h3>
-                <div className="grid grid-cols-2 gap-4">
-                  {[
-                    {
-                      icon: Plus,
-                      label: "New Appointment",
-                      action: () => setActiveTab("calendar"),
-                    },
-                    {
-                      icon: User,
-                      label: "Add Patient",
-                      action: () => setActiveTab("patients"),
-                    },
-                    {
-                      icon: Video,
-                      label: "Start Consultation",
-                      action: () => setActiveTab("consultations"),
-                    },
-                    {
-                      icon: FileText,
-                      label: "Write Prescription",
-                      action: () => setActiveTab("prescriptions"),
-                    },
-                  ].map((action, idx) => (
-                    <motion.button
-                      key={idx}
-                      whileHover={{ scale: 1.02 }}
-                      whileTap={{ scale: 0.98 }}
-                      onClick={action.action}
-                      className="flex flex-col items-center gap-3 p-6 rounded-2xl bg-neutral-50 hover:bg-neutral-100 border border-neutral-200 hover:border-neutral-300 transition-all"
-                    >
-                      <div className="p-3 rounded-xl bg-neutral-900">
-                        <action.icon className="w-6 h-6 text-white" />
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  {/* Weekly chart */}
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.3 }}
+                    className="lg:col-span-2 bg-white rounded-2xl p-6 border border-neutral-200 shadow-sm"
+                  >
+                    <div className="flex items-center justify-between mb-6">
+                      <h3 className="text-xl font-neue-bold text-neutral-900">
+                        This Week&apos;s Appointments
+                      </h3>
+                      <div className="flex items-center gap-2 text-neutral-500">
+                        <TrendingUp className="w-4 h-4" />
+                        <span className="text-sm font-poppins">last 7 days</span>
                       </div>
-                      <span className="font-poppins text-neutral-700 text-sm">
-                        {action.label}
-                      </span>
-                    </motion.button>
-                  ))}
+                    </div>
+                    <ResponsiveContainer width="100%" height={240}>
+                      <AreaChart data={weeklyChartData}>
+                        <defs>
+                          <linearGradient id="colorApts" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor="#171717" stopOpacity={0.2} />
+                            <stop offset="95%" stopColor="#171717" stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" opacity={0.5} />
+                        <XAxis dataKey="name" stroke="#6b7280" fontSize={12} />
+                        <YAxis stroke="#6b7280" fontSize={12} allowDecimals={false} />
+                        <Tooltip
+                          contentStyle={{
+                            background: "rgba(255,255,255,0.95)",
+                            border: "none",
+                            borderRadius: 12,
+                            boxShadow: "0 10px 40px rgba(0,0,0,.1)",
+                          }}
+                        />
+                        <Area
+                          type="monotone"
+                          dataKey="appointments"
+                          stroke="#171717"
+                          strokeWidth={3}
+                          fill="url(#colorApts)"
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </motion.div>
+
+                  {/* Upcoming today */}
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.4 }}
+                    className="bg-white rounded-2xl p-6 border border-neutral-200 shadow-sm"
+                  >
+                    <div className="flex items-center justify-between mb-6">
+                      <h3 className="text-xl font-neue-bold text-neutral-900">Upcoming Today</h3>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setActiveTab("calendar")}
+                        className="text-neutral-700 hover:text-neutral-900"
+                      >
+                        View All <ChevronRight className="w-4 h-4 ml-1" />
+                      </Button>
+                    </div>
+                    {upcomingToday.length === 0 ? (
+                      <p className="text-neutral-400 font-poppins text-sm text-center py-6">
+                        No upcoming appointments today.
+                      </p>
+                    ) : (
+                      <div className="space-y-4">
+                        {upcomingToday.map((apt) => (
+                          <div
+                            key={apt.id}
+                            className="flex items-center gap-4 p-3 rounded-xl hover:bg-neutral-100 transition-colors"
+                          >
+                            <div className="w-10 h-10 rounded-full bg-neutral-900 flex items-center justify-center text-white font-semibold text-sm">
+                              {apt.patient.fullName.charAt(0)}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="font-neue-bold text-neutral-900 truncate">
+                                {apt.patient.fullName}
+                              </p>
+                              <p className="text-xs text-neutral-500 font-poppins">
+                                {apt.type === "ONLINE" ? "Video Call" : "In-Person"}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-1 text-neutral-700">
+                              <Clock className="w-3 h-3" />
+                              <span className="text-sm font-poppins">
+                                {new Date(apt.dateTime).toLocaleTimeString([], {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </motion.div>
                 </div>
-              </motion.div>
-            </div>
+
+                {/* Quick actions */}
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.5 }}
+                  className="mt-6 bg-white rounded-2xl p-6 border border-neutral-200 shadow-sm"
+                >
+                  <h3 className="text-xl font-neue-bold text-neutral-900 mb-5">Quick Actions</h3>
+                  <div className="flex flex-wrap gap-4">
+                    {[
+                      { icon: CalendarIcon, label: "View Calendar", tab: "calendar" },
+                      { icon: Users, label: "Patient Directory", tab: "patients" },
+                      { icon: Activity, label: "Rehab Management", tab: "rehab" },
+                      { icon: Settings, label: "Edit Profile", tab: "settings" },
+                    ].map((action) => (
+                      <motion.button
+                        key={action.tab}
+                        whileHover={{ scale: 1.02 }}
+                        whileTap={{ scale: 0.98 }}
+                        onClick={() => setActiveTab(action.tab)}
+                        className="flex items-center gap-3 px-5 py-3 rounded-xl bg-neutral-50 hover:bg-neutral-100 border border-neutral-200 hover:border-neutral-300 transition-all"
+                      >
+                        <div className="p-2 rounded-lg bg-neutral-900">
+                          <action.icon className="w-4 h-4 text-white" />
+                        </div>
+                        <span className="font-poppins text-neutral-700 text-sm">{action.label}</span>
+                      </motion.button>
+                    ))}
+                  </div>
+                </motion.div>
+              </>
+            )}
           </>
         )}
 
-        {/* Calendar Tab */}
+        {/* ── Calendar Tab ──────────────────────────────────────────────────── */}
         {activeTab === "calendar" && (
           <>
-            {/* Header */}
             <motion.header
               initial={{ y: -20, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
@@ -997,131 +496,102 @@ export default function Dashboard() {
                   Calendar & Appointments
                 </h1>
                 <p className="text-neutral-600 font-poppins mt-1">
-                  Manage your schedule and view upcoming appointments
+                  Your full appointment schedule
                 </p>
               </div>
-              <div className="flex items-center gap-4">
-                <div className="relative">
-                  <Search className="w-5 h-5 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="text"
-                    placeholder="Search appointments..."
-                    className="pl-10 pr-4 py-2.5 rounded-xl border border-neutral-300 bg-white font-poppins focus:ring-2 focus:ring-neutral-400 focus:border-neutral-500 outline-none w-64 text-neutral-900"
-                  />
-                </div>
-                <Button variant="outline" size="icon" className="relative">
-                  <Bell className="w-5 h-5" />
-                  <span className="absolute -top-1 -right-1 w-4 h-4 bg-neutral-900 rounded-full text-white text-xs flex items-center justify-center">
-                    3
-                  </span>
-                </Button>
-                <div className="w-11 h-11 rounded-full bg-neutral-900 flex items-center justify-center text-white font-semibold">
-                  DS
-                </div>
+              <div className="w-11 h-11 rounded-full bg-neutral-900 flex items-center justify-center text-white font-semibold">
+                {doctorInitials}
               </div>
             </motion.header>
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="grid grid-cols-1 xl:grid-cols-3 gap-6"
-            >
-              <div className="xl:col-span-2">
-                <Calendar
-                  appointments={appointments}
-                  onDateSelect={() => {}}
-                  onAppointmentClick={(apt) => console.log("Clicked:", apt)}
-                />
+
+            {loading ? (
+              <div className="h-64 flex items-center justify-center">
+                <div className="w-8 h-8 border-2 border-neutral-900 border-t-transparent rounded-full animate-spin" />
               </div>
+            ) : (
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="grid grid-cols-1 xl:grid-cols-3 gap-6"
+              >
+                <div className="xl:col-span-2">
+                  <Calendar
+                    appointments={calendarAppointments}
+                    onDateSelect={() => {}}
+                    onAppointmentClick={(apt) => router.push(`/appointments/${apt.id}`)}
+                  />
+                </div>
 
-              <div className="space-y-6">
-                <Card className="bg-white border-neutral-200">
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2">
-                      <Plus className="w-5 h-5 text-neutral-700" />
-                      Quick Schedule
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <Button className="w-full mb-4">
-                      <Plus className="w-4 h-4 mr-2" />
-                      New Appointment
-                    </Button>
-                    <div className="space-y-3">
-                      <div className="p-3 rounded-xl bg-neutral-100 border border-neutral-200">
-                        <p className="font-poppins text-sm text-neutral-600">
-                          Today&apos;s Schedule
-                        </p>
-                        <p className="font-semibold text-2xl text-neutral-900">
-                          5 Appointments
-                        </p>
-                      </div>
-                      <div className="p-3 rounded-xl bg-neutral-100 border border-neutral-200">
-                        <p className="font-poppins text-sm text-neutral-600">
-                          This Week
-                        </p>
-                        <p className="font-semibold text-2xl text-neutral-900">
-                          23 Appointments
-                        </p>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                <Card className="bg-white border-neutral-200">
-                  <CardHeader>
-                    <CardTitle>Appointment Types</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    {[
-                      {
-                        type: "Consultation",
-                        count: 45,
-                        color: "bg-neutral-200 text-neutral-800",
-                      },
-                      {
-                        type: "Follow-up",
-                        count: 32,
-                        color: "bg-neutral-200 text-neutral-800",
-                      },
-                      {
-                        type: "Check-up",
-                        count: 28,
-                        color: "bg-neutral-200 text-neutral-800",
-                      },
-                      {
-                        type: "Video Call",
-                        count: 18,
-                        color: "bg-neutral-200 text-neutral-800",
-                      },
-                    ].map((item, idx) => (
-                      <div
-                        key={idx}
-                        className="flex items-center justify-between p-3 rounded-xl bg-neutral-50"
-                      >
-                        <span
-                          className={cn(
-                            "px-2 py-1 rounded-lg text-sm font-poppins",
-                            item.color,
-                          )}
+                <div className="space-y-6">
+                  <Card className="bg-white border-neutral-200">
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2">
+                        <CalendarIcon className="w-5 h-5 text-neutral-700" />
+                        Schedule Summary
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      {[
+                        {
+                          label: "Today",
+                          value: `${todayAppointments.length} Appointments`,
+                        },
+                        {
+                          label: "Total (all time)",
+                          value: `${apiAppointments.length} Appointments`,
+                        },
+                        {
+                          label: "Unique Patients",
+                          value: `${patients.length} Patients`,
+                        },
+                      ].map((item) => (
+                        <div
+                          key={item.label}
+                          className="p-3 rounded-xl bg-neutral-100 border border-neutral-200"
                         >
-                          {item.type}
-                        </span>
-                        <span className="font-neue-bold text-neutral-900">
-                          {item.count}
-                        </span>
-                      </div>
-                    ))}
-                  </CardContent>
-                </Card>
-              </div>
-            </motion.div>
+                          <p className="font-poppins text-sm text-neutral-600">{item.label}</p>
+                          <p className="font-semibold text-xl text-neutral-900">{item.value}</p>
+                        </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+
+                  <Card className="bg-white border-neutral-200">
+                    <CardHeader>
+                      <CardTitle>Appointment Types</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      {[
+                        {
+                          type: "Video Call",
+                          count: apiAppointments.filter((a) => a.type === "ONLINE").length,
+                        },
+                        {
+                          type: "In-Person",
+                          count: apiAppointments.filter((a) => a.type === "ON_SITE").length,
+                        },
+                      ].map((item) => (
+                        <div
+                          key={item.type}
+                          className="flex items-center justify-between p-3 rounded-xl bg-neutral-50"
+                        >
+                          <span className="px-2 py-1 rounded-lg text-sm font-poppins bg-neutral-200 text-neutral-800">
+                            {item.type}
+                          </span>
+                          <span className="font-neue-bold text-neutral-900">{item.count}</span>
+                        </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+                </div>
+              </motion.div>
+            )}
           </>
         )}
 
-        {/* Patients Tab */}
+        {/* ── Patients Tab ──────────────────────────────────────────────────── */}
         {activeTab === "patients" && (
           <>
-            {/* Header */}
             <motion.header
               initial={{ y: -20, opacity: 0 }}
               animate={{ y: 0, opacity: 1 }}
@@ -1133,1272 +603,728 @@ export default function Dashboard() {
                   Patient Directory
                 </h1>
                 <p className="text-neutral-600 font-poppins mt-1">
-                  Manage and view all your patients
+                  All patients who have booked appointments with you
                 </p>
               </div>
-              <div className="flex items-center gap-4">
-                <div className="relative">
-                  <Search className="w-5 h-5 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="text"
-                    placeholder="Search patients..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-10 pr-4 py-2.5 rounded-xl border border-neutral-300 bg-white font-poppins focus:ring-2 focus:ring-neutral-400 focus:border-neutral-500 outline-none w-64 text-neutral-900"
-                  />
-                </div>
-                <Button variant="outline" size="icon" className="relative">
-                  <Bell className="w-5 h-5" />
-                  <span className="absolute -top-1 -right-1 w-4 h-4 bg-neutral-900 rounded-full text-white text-xs flex items-center justify-center">
-                    3
-                  </span>
-                </Button>
-                <div className="w-11 h-11 rounded-full bg-neutral-900 flex items-center justify-center text-white font-semibold">
-                  DS
-                </div>
+              <div className="w-11 h-11 rounded-full bg-neutral-900 flex items-center justify-center text-white font-semibold">
+                {doctorInitials}
               </div>
             </motion.header>
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-            >
-              {/* Filters and Actions */}
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
-                <div>
-                  <h2 className="text-2xl font-neue-bold text-neutral-900">
-                    Patient Directory
-                  </h2>
-                  <p className="text-neutral-600 font-poppins">
-                    Manage and view all your patients
-                  </p>
+
+            {loading ? (
+              <div className="h-64 flex items-center justify-center">
+                <div className="w-8 h-8 border-2 border-neutral-900 border-t-transparent rounded-full animate-spin" />
+              </div>
+            ) : (
+              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
+                {/* Stats row */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                  {[
+                    { label: "Total Patients", value: patients.length, icon: Users },
+                    {
+                      label: "Completed Visits",
+                      value: apiAppointments.filter((a) => a.status === "COMPLETED").length,
+                      icon: CheckCircle,
+                    },
+                    {
+                      label: "Upcoming",
+                      value: apiAppointments.filter(
+                        (a) => a.status === "CONFIRMED" || a.status === "PENDING"
+                      ).length,
+                      icon: AlertCircle,
+                    },
+                  ].map((stat, idx) => (
+                    <motion.div
+                      key={idx}
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: idx * 0.1 }}
+                      className="bg-white rounded-xl p-4 border border-neutral-200 shadow-sm flex items-center gap-4"
+                    >
+                      <div className="p-3 rounded-xl bg-neutral-900">
+                        <stat.icon className="w-5 h-5 text-white" />
+                      </div>
+                      <div>
+                        <p className="text-2xl font-neue-bold text-neutral-900">{stat.value}</p>
+                        <p className="text-sm text-neutral-600 font-poppins">{stat.label}</p>
+                      </div>
+                    </motion.div>
+                  ))}
                 </div>
-                <div className="flex items-center gap-3">
-                  <div className="relative">
+
+                {/* Search */}
+                <div className="flex items-center gap-4 mb-5">
+                  <div className="relative flex-1 max-w-sm">
                     <Search className="w-5 h-5 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
                     <input
                       type="text"
-                      placeholder="Search patients..."
+                      placeholder="Search by name or email…"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      className="pl-10 pr-4 py-2.5 rounded-xl border border-neutral-300 bg-white font-poppins focus:ring-2 focus:ring-neutral-400 focus:border-neutral-500 outline-none w-64 text-neutral-900"
-                    />
-                  </div>
-                  <div className="flex items-center gap-2 bg-white/80 rounded-xl border border-neutral-200 p-1">
-                    {["all", "active", "inactive", "critical"].map((filter) => (
-                      <button
-                        key={filter}
-                        onClick={() =>
-                          setPatientFilter(filter as typeof patientFilter)
-                        }
-                        className={cn(
-                          "px-3 py-1.5 rounded-lg font-poppins text-sm transition-all capitalize",
-                          patientFilter === filter
-                            ? "bg-neutral-900 text-white"
-                            : "text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900",
-                        )}
-                      >
-                        {filter}
-                      </button>
-                    ))}
-                  </div>
-                  <Button className="bg-neutral-900 text-white hover:bg-neutral-800 hover:text-white">
-                    <Plus className="w-4 h-4 mr-2" />
-                    Add Patient
-                  </Button>
-                </div>
-              </div>
-
-              {/* Patient Stats */}
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-                {[
-                  {
-                    label: "Total Patients",
-                    value: patients.length,
-                    icon: Users,
-                  },
-                  {
-                    label: "Active",
-                    value: patients.filter((p) => p.status === "Active").length,
-                    icon: CheckCircle,
-                  },
-                  {
-                    label: "Inactive",
-                    value: patients.filter((p) => p.status === "Inactive")
-                      .length,
-                    icon: AlertCircle,
-                  },
-                  {
-                    label: "Critical",
-                    value: patients.filter((p) => p.status === "Critical")
-                      .length,
-                    icon: XCircle,
-                  },
-                ].map((stat, idx) => (
-                  <motion.div
-                    key={idx}
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: idx * 0.1 }}
-                    className="bg-white rounded-xl p-4 border border-white/30 shadow-lg flex items-center gap-4"
-                  >
-                    <div className="p-3 rounded-xl bg-neutral-900">
-                      <stat.icon className="w-5 h-5 text-white" />
-                    </div>
-                    <div>
-                      <p className="text-2xl font-neue-bold text-neutral-900">
-                        {stat.value}
-                      </p>
-                      <p className="text-sm text-neutral-600 font-poppins">
-                        {stat.label}
-                      </p>
-                    </div>
-                  </motion.div>
-                ))}
-              </div>
-
-              {/* Patient List */}
-              <div className="bg-white rounded-2xl border border-neutral-200 shadow-sm overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead className="bg-neutral-100">
-                      <tr>
-                        <th className="text-left p-4 font-neue-bold text-neutral-900">
-                          Patient
-                        </th>
-                        <th className="text-left p-4 font-neue-bold text-neutral-900">
-                          Contact
-                        </th>
-                        <th className="text-left p-4 font-neue-bold text-neutral-900">
-                          Details
-                        </th>
-                        <th className="text-left p-4 font-neue-bold text-neutral-900">
-                          Condition
-                        </th>
-                        <th className="text-left p-4 font-neue-bold text-neutral-900">
-                          Status
-                        </th>
-                        <th className="text-left p-4 font-neue-bold text-neutral-900">
-                          Actions
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredPatients.map((patient, idx) => (
-                        <motion.tr
-                          key={patient.id}
-                          initial={{ opacity: 0, x: -20 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          transition={{ delay: idx * 0.05 }}
-                          className="border-b border-neutral-100 hover:bg-neutral-50 transition-colors"
-                        >
-                          <td className="p-4">
-                            <div className="flex items-center gap-3">
-                              <div className="w-10 h-10 rounded-full bg-neutral-900 flex items-center justify-center text-white font-semibold">
-                                {patient.name.charAt(0)}
-                              </div>
-                              <div>
-                                <p className="font-neue-bold text-neutral-900">
-                                  {patient.name}
-                                </p>
-                                <p className="text-xs text-neutral-500 font-poppins">
-                                  ID: {patient.id}
-                                </p>
-                              </div>
-                            </div>
-                          </td>
-                          <td className="p-4">
-                            <div className="space-y-1">
-                              <div className="flex items-center gap-2 text-sm text-neutral-600">
-                                <Mail className="w-3 h-3" />
-                                {patient.email}
-                              </div>
-                              <div className="flex items-center gap-2 text-sm text-neutral-600">
-                                <Phone className="w-3 h-3" />
-                                {patient.phone}
-                              </div>
-                            </div>
-                          </td>
-                          <td className="p-4">
-                            <div className="space-y-1 text-sm text-neutral-600 font-poppins">
-                              <p>
-                                Age: {patient.age} | {patient.gender}
-                              </p>
-                              <p>Blood: {patient.bloodType}</p>
-                            </div>
-                          </td>
-                          <td className="p-4">
-                            <span className="text-sm text-neutral-900 font-poppins">
-                              {patient.condition}
-                            </span>
-                            <p className="text-xs text-neutral-500">
-                              Last visit: {patient.lastVisit}
-                            </p>
-                          </td>
-                          <td className="p-4">
-                            <span
-                              className={cn(
-                                "px-3 py-1 rounded-full text-xs font-poppins",
-                                patient.status === "Active" &&
-                                  "bg-neutral-200 text-neutral-800",
-                                patient.status === "Inactive" &&
-                                  "bg-neutral-300 text-neutral-800",
-                                patient.status === "Critical" &&
-                                  "bg-neutral-800 text-white",
-                              )}
-                            >
-                              {patient.status}
-                            </span>
-                          </td>
-                          <td className="p-4">
-                            <div className="flex items-center gap-2">
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-neutral-700 hover:bg-neutral-100 hover:text-neutral-900"
-                                onClick={() =>
-                                  handleStartConsultation(patient, "chat")
-                                }
-                              >
-                                <MessageCircle className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-neutral-700 hover:bg-neutral-100 hover:text-neutral-900"
-                                onClick={() =>
-                                  handleStartConsultation(patient, "video")
-                                }
-                              >
-                                <Video className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-neutral-600 hover:bg-neutral-50"
-                              >
-                                <Eye className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-neutral-600 hover:bg-neutral-50"
-                              >
-                                <MoreVertical className="w-4 h-4" />
-                              </Button>
-                            </div>
-                          </td>
-                        </motion.tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </motion.div>
-          </>
-        )}
-
-        {/* Consultations Tab */}
-        {activeTab === "consultations" && (
-          <>
-            {/* Header */}
-            <motion.header
-              initial={{ y: -20, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              className="flex justify-between items-center mb-8"
-            >
-              <div>
-                <h1 className="text-4xl font-neue-bold text-neutral-900 flex items-center gap-3">
-                  <Video className="w-10 h-10 text-neutral-700" />
-                  Consultations
-                </h1>
-                <p className="text-neutral-600 font-poppins mt-1">
-                  Chat and video consultations with your patients
-                </p>
-              </div>
-              <div className="flex items-center gap-4">
-                <Button variant="outline" size="icon" className="relative">
-                  <Bell className="w-5 h-5" />
-                  <span className="absolute -top-1 -right-1 w-4 h-4 bg-neutral-900 rounded-full text-white text-xs flex items-center justify-center">
-                    3
-                  </span>
-                </Button>
-                <div className="w-11 h-11 rounded-full bg-neutral-900 flex items-center justify-center text-white font-semibold">
-                  DS
-                </div>
-              </div>
-            </motion.header>
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="flex gap-6 h-[calc(100vh-160px)]"
-            >
-              {/* Patient List for Consultations */}
-              <div
-                className={cn(
-                  "bg-white rounded-2xl border border-neutral-200 shadow-sm overflow-hidden transition-all duration-300 flex flex-col",
-                  consultationMode ? "w-1/3" : "w-full",
-                )}
-              >
-                <div className="p-4 border-b border-neutral-100 bg-neutral-100">
-                  <h3 className="font-neue-bold text-lg text-neutral-900">
-                    Available Patients
-                  </h3>
-                  <p className="text-sm text-neutral-600 font-poppins">
-                    Select a patient to start consultation
-                  </p>
-                </div>
-                <div className="p-4">
-                  <div className="relative mb-4">
-                    <Search className="w-5 h-5 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="text"
-                      placeholder="Search patients..."
-                      className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-neutral-200 bg-white font-poppins focus:ring-2 focus:ring-neutral-400 focus:border-neutral-500 outline-none"
+                      className="pl-10 pr-4 py-2.5 rounded-xl border border-neutral-300 bg-white font-poppins focus:ring-2 focus:ring-neutral-400 focus:border-neutral-500 outline-none w-full text-neutral-900"
                     />
                   </div>
                 </div>
-                <div className="overflow-y-auto flex-1 p-4">
-                  <div className="grid grid-cols-2 gap-3">
-                    {patients.map((patient, idx) => (
-                      <motion.div
-                        key={patient.id}
-                        initial={{ opacity: 0, x: -20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{ delay: idx * 0.05 }}
-                        className={cn(
-                          "p-3 rounded-xl border border-neutral-200 hover:bg-neutral-100 hover:border-neutral-300 transition-all cursor-pointer bg-white",
-                          selectedPatient?.id === patient.id &&
-                            "bg-neutral-100 border-neutral-300",
-                        )}
-                      >
-                        <div className="flex flex-col items-center gap-2">
-                          <div className="relative">
-                            <div className="w-12 h-12 rounded-full bg-neutral-900 flex items-center justify-center text-white font-semibold">
-                              {patient.name.charAt(0)}
-                            </div>
-                            <span
-                              className={cn(
-                                "absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-white",
-                                patient.status === "Active" && "bg-neutral-900",
-                                patient.status === "Inactive" &&
-                                  "bg-neutral-400",
-                                patient.status === "Critical" &&
-                                  "bg-neutral-600",
-                              )}
-                            />
-                          </div>
-                          <div className="flex-1 w-full text-center">
-                            <p className="font-neue-bold text-neutral-900 text-sm truncate">
-                              {patient.name}
-                            </p>
-                            <p className="text-xs text-neutral-500 font-poppins truncate">
-                              {patient.condition}
-                            </p>
-                          </div>
-                          <div className="flex gap-2 w-full justify-center">
-                            <motion.button
-                              whileHover={{ scale: 1.1 }}
-                              whileTap={{ scale: 0.9 }}
-                              onClick={() =>
-                                handleStartConsultation(patient, "chat")
-                              }
-                              className="p-1.5 rounded-lg bg-neutral-200 text-neutral-800 hover:bg-neutral-300 hover:text-neutral-900 transition-colors"
-                            >
-                              <MessageCircle className="w-3.5 h-3.5" />
-                            </motion.button>
-                            <motion.button
-                              whileHover={{ scale: 1.1 }}
-                              whileTap={{ scale: 0.9 }}
-                              onClick={() =>
-                                handleStartConsultation(patient, "video")
-                              }
-                              className="p-1.5 rounded-lg bg-neutral-200 text-neutral-800 hover:bg-neutral-300 transition-colors"
-                            >
-                              <Video className="w-3.5 h-3.5" />
-                            </motion.button>
-                          </div>
-                        </div>
-                      </motion.div>
-                    ))}
+
+                {/* Patient list */}
+                {filteredPatients.length === 0 ? (
+                  <div className="bg-white rounded-2xl border border-dashed border-neutral-300 py-16 text-center">
+                    <Users className="w-10 h-10 text-neutral-300 mx-auto mb-3" />
+                    <p className="text-neutral-500 font-poppins">
+                      {searchQuery
+                        ? "No patients match your search."
+                        : "No patients yet. They will appear here once they book appointments."}
+                    </p>
                   </div>
-                </div>
-              </div>
-
-              {/* Chat Interface - Mobile-like UI */}
-              <AnimatePresence>
-                {consultationMode === "chat" && selectedPatient && (
-                  <motion.div
-                    initial={{ x: 100, opacity: 0 }}
-                    animate={{ x: 0, opacity: 1 }}
-                    exit={{ x: 100, opacity: 0 }}
-                    className="flex-1 translate-y-[-50px] flex justify-center items-center"
-                  >
-                    <div className="w-[400px] h-[750px] bg-neutral-900 rounded-[3rem] p-2 shadow-2xl relative">
-                      {/* Camera Icon on top of mobile frame */}
-                      <div className="absolute top-4 right-12 z-30">
-                        <button
-                          onClick={() => setConsultationMode("video")}
-                          className="p-2 rounded-full bg-neutral-800/90 hover:bg-neutral-700 transition-colors shadow-lg border border-neutral-700"
-                        >
-                          <Video className="w-4 h-4 text-white" />
-                        </button>
-                      </div>
-                      <div className="w-full h-full bg-white rounded-[2.5rem] overflow-hidden flex flex-col">
-                        {/* Phone Notch */}
-                        <div className="relative">
-                          <div className="absolute top-3 left-1/2 -translate-x-1/2 w-22 h-6 bg-neutral-900 rounded-full z-10" />
-                        </div>
-                        {/* Chat Header */}
-                        <div className="bg-neutral-900 px-6 pt-8 pb-4">
-                          <div className="flex items-center justify-between mt-2">
-                            <button
-                              onClick={() => {
-                                setConsultationMode(null);
-                                setSelectedPatient(null);
-                              }}
-                              className="p-2 rounded-full bg-white/20 hover:bg-white/30 transition-colors"
-                            >
-                              <ChevronLeft className="w-5 h-5 text-white" />
-                            </button>
-                            <div className="text-center">
-                              <p className="text-white font-neue-bold">
-                                {selectedPatient.name}
-                              </p>
-                              <p className="text-white/70 text-xs font-poppins">
-                                Online
-                              </p>
-                            </div>
-                            <button className="p-2 rounded-full bg-white/20 hover:bg-white/30 transition-colors">
-                              <Phone className="w-4 h-4 text-white" />
-                            </button>
-                          </div>
-                        </div>
-
-                        {/* Chat Messages */}
-                        <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-neutral-50">
-                          {chatMessages.map((msg) => (
-                            <motion.div
-                              key={msg.id}
-                              initial={{ opacity: 0, y: 10 }}
-                              animate={{ opacity: 1, y: 0 }}
-                              className={cn(
-                                "flex",
-                                msg.sender === "doctor"
-                                  ? "justify-end"
-                                  : "justify-start",
-                              )}
-                            >
-                              <div
-                                className={cn(
-                                  "max-w-[80%] rounded-2xl px-4 py-3 shadow-sm",
-                                  msg.sender === "doctor"
-                                    ? "bg-neutral-900 text-white rounded-br-md"
-                                    : "bg-white text-neutral-900 rounded-bl-md",
-                                )}
-                              >
-                                <p className="text-sm font-poppins">
-                                  {msg.content}
-                                </p>
-                                <p
-                                  className={cn(
-                                    "text-xs mt-1",
-                                    msg.sender === "doctor"
-                                      ? "text-white/70"
-                                      : "text-neutral-400",
-                                  )}
+                ) : (
+                  <div className="bg-white rounded-2xl border border-neutral-200 shadow-sm overflow-hidden">
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead className="bg-neutral-100">
+                          <tr>
+                            {["Patient", "Contact", "Appointments", "Last Visit", "Actions"].map(
+                              (h) => (
+                                <th
+                                  key={h}
+                                  className="text-left p-4 font-neue-bold text-neutral-900"
                                 >
-                                  {msg.timestamp}
+                                  {h}
+                                </th>
+                              )
+                            )}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filteredPatients.map((patient, idx) => (
+                            <motion.tr
+                              key={patient.id}
+                              initial={{ opacity: 0, x: -20 }}
+                              animate={{ opacity: 1, x: 0 }}
+                              transition={{ delay: idx * 0.04 }}
+                              className="border-b border-neutral-100 hover:bg-neutral-50 transition-colors"
+                            >
+                              <td className="p-4">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-10 h-10 rounded-full bg-neutral-900 flex items-center justify-center text-white font-semibold text-sm">
+                                    {initials(patient.fullName)}
+                                  </div>
+                                  <div>
+                                    <p className="font-neue-bold text-neutral-900">
+                                      {patient.fullName}
+                                    </p>
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="p-4">
+                                <div className="space-y-1">
+                                  <div className="flex items-center gap-2 text-sm text-neutral-600">
+                                    <Mail className="w-3 h-3" />
+                                    {patient.email}
+                                  </div>
+                                  {patient.phone && (
+                                    <div className="flex items-center gap-2 text-sm text-neutral-600">
+                                      <Phone className="w-3 h-3" />
+                                      {patient.phone}
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="p-4">
+                                <span className="text-sm font-semibold text-neutral-900">
+                                  {patient.appointmentCount}
+                                </span>
+                                <span className="text-xs text-neutral-500 ml-1 font-poppins">
+                                  visit{patient.appointmentCount !== 1 ? "s" : ""}
+                                </span>
+                              </td>
+                              <td className="p-4">
+                                <span className="text-sm text-neutral-600 font-poppins">
+                                  {patient.lastAppointment.toLocaleDateString()}
+                                </span>
+                                <p className="text-xs text-neutral-400 font-poppins capitalize mt-0.5">
+                                  {patient.lastStatus.toLowerCase()}
                                 </p>
-                              </div>
-                            </motion.div>
+                              </td>
+                              <td className="p-4">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setActiveTab("rehab")}
+                                  className="text-neutral-700 hover:bg-neutral-100"
+                                >
+                                  <Activity className="w-4 h-4 mr-1" />
+                                  Rehab
+                                </Button>
+                              </td>
+                            </motion.tr>
                           ))}
-                        </div>
-
-                        {/* Chat Input */}
-                        <div className="p-4 bg-white border-t border-neutral-100">
-                          <div className="flex items-center gap-2">
-                            <button className="p-2 rounded-full hover:bg-neutral-100 transition-colors">
-                              <Paperclip className="w-5 h-5 text-neutral-500" />
-                            </button>
-                            <input
-                              type="text"
-                              placeholder="Type a message..."
-                              value={chatMessage}
-                              onChange={(e) => setChatMessage(e.target.value)}
-                              onKeyDown={(e) =>
-                                e.key === "Enter" && handleSendMessage()
-                              }
-                              className="flex-1 px-4 py-2.5 rounded-full border border-neutral-200 bg-neutral-50 font-poppins text-sm focus:ring-2 focus:ring-neutral-400 focus:border-neutral-500 outline-none"
-                            />
-                            <button className="p-2 rounded-full hover:bg-neutral-100 transition-colors">
-                              <Smile className="w-5 h-5 text-neutral-500" />
-                            </button>
-                            <motion.button
-                              whileHover={{ scale: 1.05 }}
-                              whileTap={{ scale: 0.95 }}
-                              onClick={handleSendMessage}
-                              className="p-2.5 rounded-full bg-neutral-900 text-white shadow-lg"
-                            >
-                              <Send className="w-5 h-5" />
-                            </motion.button>
-                          </div>
-                        </div>
-
-                        {/* Home Indicator */}
-                        <div className="h-8 bg-white flex items-center justify-center">
-                          <div className="w-32 h-1 bg-neutral-300 rounded-full" />
-                        </div>
-                      </div>
+                        </tbody>
+                      </table>
                     </div>
-                  </motion.div>
+                  </div>
                 )}
-
-                {/* Video Call Interface */}
-                {consultationMode === "video" && selectedPatient && (
-                  <motion.div
-                    initial={{ scale: 0.9, opacity: 0 }}
-                    animate={{ scale: 1, opacity: 1 }}
-                    exit={{ scale: 0.9, opacity: 0 }}
-                    className="flex-1 bg-neutral-900 rounded-2xl overflow-hidden relative"
-                  >
-                    {/* Main Video (Patient) */}
-                    <div className="absolute inset-0 bg-gradient-to-br from-neutral-800 to-neutral-900 flex items-center justify-center">
-                      <div className="text-center">
-                        <div className="w-32 h-32 rounded-full bg-neutral-700 flex items-center justify-center text-white text-5xl font-neue-bold mx-auto mb-4">
-                          {selectedPatient.name.charAt(0)}
-                        </div>
-                        <p className="text-white text-xl font-neue-bold">
-                          {selectedPatient.name}
-                        </p>
-                        <p className="text-neutral-400 font-poppins">
-                          {isVideoCallActive ? "Connected" : "Connecting..."}
-                        </p>
-                      </div>
-                    </div>
-
-                    {/* Self View (Doctor) */}
-                    <motion.div
-                      initial={{ scale: 0.8, opacity: 0 }}
-                      animate={{ scale: 1, opacity: 1 }}
-                      className="absolute top-6 right-6 w-48 h-36 rounded-xl bg-neutral-700 shadow-2xl flex items-center justify-center overflow-hidden"
-                    >
-                      {isVideoOff ? (
-                        <div className="text-center">
-                          <VideoOff className="w-8 h-8 text-white/60 mx-auto" />
-                          <p className="text-white/60 text-xs mt-2 font-poppins">
-                            Camera Off
-                          </p>
-                        </div>
-                      ) : (
-                        <div className="text-center">
-                          <div className="w-16 h-16 rounded-full bg-white/20 flex items-center justify-center text-white text-2xl font-neue-bold">
-                            DS
-                          </div>
-                        </div>
-                      )}
-                    </motion.div>
-
-                    {/* Patient Info Bar */}
-                    <div className="absolute top-6 left-6 bg-black/40 backdrop-blur-md rounded-xl p-4 flex items-center gap-4">
-                      <div className="flex items-center gap-3">
-                        <Activity className="w-5 h-5 text-neutral-400" />
-                        <div>
-                          <p className="text-white font-neue-bold text-sm">
-                            {selectedPatient.name}
-                          </p>
-                          <p className="text-neutral-400 text-xs font-poppins">
-                            {selectedPatient.condition}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="w-px h-8 bg-neutral-600" />
-                      <div className="text-center">
-                        <p className="text-white text-xs font-poppins">
-                          Blood Type
-                        </p>
-                        <p className="text-white font-neue-bold">
-                          {selectedPatient.bloodType}
-                        </p>
-                      </div>
-                    </div>
-
-                    {/* Controls */}
-                    <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex items-center gap-4">
-                      <motion.button
-                        whileHover={{ scale: 1.1 }}
-                        whileTap={{ scale: 0.9 }}
-                        onClick={() => setIsMuted(!isMuted)}
-                        className={cn(
-                          "p-4 rounded-full transition-colors",
-                          isMuted
-                            ? "bg-red-500 text-white"
-                            : "bg-white/20 text-white hover:bg-white/30",
-                        )}
-                      >
-                        {isMuted ? (
-                          <MicOff className="w-6 h-6" />
-                        ) : (
-                          <Mic className="w-6 h-6" />
-                        )}
-                      </motion.button>
-                      <motion.button
-                        whileHover={{ scale: 1.1 }}
-                        whileTap={{ scale: 0.9 }}
-                        onClick={() => setIsVideoOff(!isVideoOff)}
-                        className={cn(
-                          "p-4 rounded-full transition-colors",
-                          isVideoOff
-                            ? "bg-red-500 text-white"
-                            : "bg-white/20 text-white hover:bg-white/30",
-                        )}
-                      >
-                        {isVideoOff ? (
-                          <VideoOff className="w-6 h-6" />
-                        ) : (
-                          <VideoIcon className="w-6 h-6" />
-                        )}
-                      </motion.button>
-                      <motion.button
-                        whileHover={{ scale: 1.1 }}
-                        whileTap={{ scale: 0.9 }}
-                        className="p-4 rounded-full bg-white/20 text-white hover:bg-white/30 transition-colors"
-                      >
-                        <Monitor className="w-6 h-6" />
-                      </motion.button>
-                      <motion.button
-                        whileHover={{ scale: 1.1 }}
-                        whileTap={{ scale: 0.9 }}
-                        onClick={() => setConsultationMode("chat")}
-                        className="p-4 rounded-full bg-white/20 text-white hover:bg-white/30 transition-colors"
-                      >
-                        <MessageCircle className="w-6 h-6" />
-                      </motion.button>
-                      <motion.button
-                        whileHover={{ scale: 1.1 }}
-                        whileTap={{ scale: 0.9 }}
-                        onClick={handleEndCall}
-                        className="p-4 rounded-full bg-red-500 text-white hover:bg-red-600 transition-colors"
-                      >
-                        <PhoneOff className="w-6 h-6" />
-                      </motion.button>
-                    </div>
-
-                    {/* Call Duration */}
-                    <div className="absolute bottom-8 right-8 bg-black/40 backdrop-blur-md rounded-lg px-4 py-2">
-                      <div className="flex items-center gap-2">
-                        <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                        <span className="text-white font-poppins text-sm">
-                          05:32
-                        </span>
-                      </div>
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            </motion.div>
+              </motion.div>
+            )}
           </>
         )}
 
-        {/* Prescriptions Tab */}
-        {activeTab === "prescriptions" && (
-          <>
-            {/* Header */}
-            <motion.header
-              initial={{ y: -20, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              className="flex justify-between items-center mb-8"
-            >
-              <div>
-                <h1 className="text-4xl font-neue-bold text-neutral-900 flex items-center gap-3">
-                  <Pill className="w-10 h-10 text-neutral-700" />
-                  Prescriptions
-                </h1>
-                <p className="text-neutral-600 font-poppins mt-1">
-                  Manage patient prescriptions and medications
-                </p>
-              </div>
-              <div className="flex items-center gap-4">
-                <div className="relative">
-                  <Search className="w-5 h-5 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="text"
-                    placeholder="Search prescriptions..."
-                    className="pl-10 pr-4 py-2.5 rounded-xl border border-neutral-300 bg-white font-poppins focus:ring-2 focus:ring-neutral-400 focus:border-neutral-500 outline-none w-64 text-neutral-900"
-                  />
-                </div>
-                <Button variant="outline" size="icon" className="relative">
-                  <Bell className="w-5 h-5" />
-                  <span className="absolute -top-1 -right-1 w-4 h-4 bg-neutral-900 rounded-full text-white text-xs flex items-center justify-center">
-                    3
-                  </span>
-                </Button>
-                <div className="w-11 h-11 rounded-full bg-neutral-900 flex items-center justify-center text-white font-semibold">
-                  DS
-                </div>
-              </div>
-            </motion.header>
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-            >
-              {/* Actions */}
-              <div className="flex flex-col md:flex-row md:items-center justify-end gap-4 mb-6">
-                <div className="flex items-center gap-3">
-                  <Button variant="outline" className="gap-2">
-                    <Filter className="w-4 h-4" />
-                    Filter
-                  </Button>
-                  <Button variant="outline" className="gap-2">
-                    <Download className="w-4 h-4" />
-                    Export
-                  </Button>
-                  <Button className="bg-neutral-900 text-white hover:bg-neutral-800 gap-2">
-                    <Plus className="w-4 h-4" />
-                    New Prescription
-                  </Button>
-                </div>
-              </div>
+        {/* ── Rehab tab ── */}
+        {activeTab === "rehab" && <RehabPanel />}
 
-              {/* Prescription Stats */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                {[
-                  {
-                    label: "Active Prescriptions",
-                    value: prescriptions.filter((p) => p.status === "Active")
-                      .length,
-                    icon: FileText,
-                    color: "bg-neutral-900",
-                  },
-                  {
-                    label: "Completed",
-                    value: prescriptions.filter((p) => p.status === "Completed")
-                      .length,
-                    icon: CheckCircle,
-                    color: "bg-neutral-700",
-                  },
-                  {
-                    label: "Pending Refills",
-                    value: 3,
-                    icon: AlertCircle,
-                    color: "bg-neutral-500",
-                  },
-                ].map((stat, idx) => (
-                  <motion.div
-                    key={idx}
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: idx * 0.1 }}
-                    className="bg-white rounded-xl p-5 border border-white/30 shadow-lg flex items-center gap-4"
-                  >
-                    <div className={cn("p-3 rounded-xl", stat.color)}>
-                      <stat.icon className="w-6 h-6 text-white" />
-                    </div>
-                    <div>
-                      <p className="text-2xl font-neue-bold text-neutral-900">
-                        {stat.value}
-                      </p>
-                      <p className="text-sm text-neutral-600 font-poppins">
-                        {stat.label}
-                      </p>
-                    </div>
-                  </motion.div>
-                ))}
-              </div>
-
-              {/* Prescriptions List */}
-              <div className="bg-white rounded-2xl border border-neutral-200 shadow-sm overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead className="bg-neutral-100">
-                      <tr>
-                        <th className="text-left p-4 font-neue-bold text-neutral-900">
-                          Patient
-                        </th>
-                        <th className="text-left p-4 font-neue-bold text-neutral-900">
-                          Medication
-                        </th>
-                        <th className="text-left p-4 font-neue-bold text-neutral-900">
-                          Dosage
-                        </th>
-                        <th className="text-left p-4 font-neue-bold text-neutral-900">
-                          Frequency
-                        </th>
-                        <th className="text-left p-4 font-neue-bold text-neutral-900">
-                          Duration
-                        </th>
-                        <th className="text-left p-4 font-neue-bold text-neutral-900">
-                          Status
-                        </th>
-                        <th className="text-left p-4 font-neue-bold text-neutral-900">
-                          Actions
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {prescriptions.map((prescription, idx) => (
-                        <motion.tr
-                          key={prescription.id}
-                          initial={{ opacity: 0, x: -20 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          transition={{ delay: idx * 0.05 }}
-                          className="border-b border-neutral-100 hover:bg-neutral-50 transition-colors"
-                        >
-                          <td className="p-4">
-                            <div className="flex items-center gap-3">
-                              <div className="w-10 h-10 rounded-full bg-neutral-900 flex items-center justify-center text-white font-semibold">
-                                {prescription.patientName.charAt(0)}
-                              </div>
-                              <div>
-                                <p className="font-neue-bold text-neutral-900">
-                                  {prescription.patientName}
-                                </p>
-                                <p className="text-xs text-neutral-500 font-poppins">
-                                  {prescription.date}
-                                </p>
-                              </div>
-                            </div>
-                          </td>
-                          <td className="p-4">
-                            <div className="flex items-center gap-2">
-                              <Pill className="w-4 h-4 text-neutral-700" />
-                              <span className="font-poppins text-neutral-900">
-                                {prescription.medication}
-                              </span>
-                            </div>
-                          </td>
-                          <td className="p-4 font-poppins text-neutral-600">
-                            {prescription.dosage}
-                          </td>
-                          <td className="p-4 font-poppins text-neutral-600">
-                            {prescription.frequency}
-                          </td>
-                          <td className="p-4 font-poppins text-neutral-600">
-                            {prescription.duration}
-                          </td>
-                          <td className="p-4">
-                            <span
-                              className={cn(
-                                "px-3 py-1 rounded-full text-xs font-poppins",
-                                prescription.status === "Active" &&
-                                  "bg-neutral-200 text-neutral-800",
-                                prescription.status === "Completed" &&
-                                  "bg-neutral-300 text-neutral-700",
-                                prescription.status === "Cancelled" &&
-                                  "bg-neutral-800 text-white",
-                              )}
-                            >
-                              {prescription.status}
-                            </span>
-                          </td>
-                          <td className="p-4">
-                            <div className="flex items-center gap-2">
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-neutral-700 hover:bg-neutral-100 hover:text-neutral-900"
-                              >
-                                <Eye className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-neutral-600 hover:bg-neutral-50"
-                              >
-                                <Edit className="w-4 h-4" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-8 w-8 text-neutral-600 hover:bg-neutral-50"
-                              >
-                                <Download className="w-4 h-4" />
-                              </Button>
-                            </div>
-                          </td>
-                        </motion.tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </motion.div>
-          </>
-        )}
-
-        {/* Analytics Tab */}
-        {activeTab === "analytics" && (
-          <>
-            {/* Header */}
-            <motion.header
-              initial={{ y: -20, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
-              className="flex justify-between items-center mb-8"
-            >
-              <div>
-                <h1 className="text-4xl font-neue-bold text-neutral-900 flex items-center gap-3">
-                  <BarChart3 className="w-10 h-10 text-neutral-700" />
-                  Analytics Dashboard
-                </h1>
-                <p className="text-neutral-600 font-poppins mt-1">
-                  Track your practice performance and insights
-                </p>
-              </div>
-              <div className="flex items-center gap-4">
-                <Button variant="outline" size="icon" className="relative">
-                  <Bell className="w-5 h-5" />
-                  <span className="absolute -top-1 -right-1 w-4 h-4 bg-neutral-900 rounded-full text-white text-xs flex items-center justify-center">
-                    3
-                  </span>
-                </Button>
-                <div className="w-11 h-11 rounded-full bg-neutral-900 flex items-center justify-center text-white font-semibold">
-                  DS
-                </div>
-              </div>
-            </motion.header>
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-            >
-              {/* Filters */}
-              <div className="flex flex-col md:flex-row md:items-center justify-end gap-4 mb-6">
-                <div className="flex items-center gap-3">
-                  <select className="px-4 py-2.5 rounded-xl border border-neutral-200 bg-white font-poppins focus:ring-2 focus:ring-neutral-400 focus:border-neutral-500 outline-none">
-                    <option>Last 6 Months</option>
-                    <option>Last 3 Months</option>
-                    <option>Last Month</option>
-                    <option>This Year</option>
-                  </select>
-                  <Button variant="outline" className="gap-2">
-                    <Download className="w-4 h-4" />
-                    Export Report
-                  </Button>
-                </div>
-              </div>
-
-              {/* Key Metrics */}
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-                {[
-                  {
-                    label: "Total Revenue",
-                    value: "$265,200",
-                    change: "+12.5%",
-                    icon: DollarSign,
-                    color: "bg-neutral-900",
-                  },
-                  {
-                    label: "Total Patients",
-                    value: "1,247",
-                    change: "+8.2%",
-                    icon: Users,
-                    color: "bg-neutral-800",
-                  },
-                  {
-                    label: "Consultations",
-                    value: "892",
-                    change: "+15.3%",
-                    icon: Video,
-                    color: "bg-neutral-700",
-                  },
-                  {
-                    label: "Satisfaction",
-                    value: "4.8/5",
-                    change: "+0.3",
-                    icon: Heart,
-                    color: "bg-neutral-600",
-                  },
-                ].map((metric, idx) => (
-                  <motion.div
-                    key={idx}
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: idx * 0.1 }}
-                    className="bg-white rounded-xl p-5 border border-white/30 shadow-lg"
-                  >
-                    <div className="flex items-center justify-between mb-3">
-                      <div className={cn("p-2.5 rounded-lg", metric.color)}>
-                        <metric.icon className="w-5 h-5 text-white" />
-                      </div>
-                      <span className="text-neutral-900 text-sm font-poppins flex items-center gap-1">
-                        <TrendingUp className="w-3 h-3" />
-                        {metric.change}
-                      </span>
-                    </div>
-                    <p className="text-2xl font-neue-bold text-neutral-900">
-                      {metric.value}
-                    </p>
-                    <p className="text-sm text-neutral-600 font-poppins">
-                      {metric.label}
-                    </p>
-                  </motion.div>
-                ))}
-              </div>
-
-              {/* Charts Grid */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-                {/* Revenue & Patients Chart */}
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.2 }}
-                  className="bg-white rounded-2xl p-6 border border-neutral-200 shadow-sm"
-                >
-                  <h3 className="text-xl font-neue-bold text-neutral-900 mb-6">
-                    Revenue & Patient Trends
-                  </h3>
-                  <ResponsiveContainer width="100%" height={300}>
-                    <LineChart data={revenueData}>
-                      <CartesianGrid
-                        strokeDasharray="3 3"
-                        stroke="#e5e7eb"
-                        opacity={0.5}
-                      />
-                      <XAxis dataKey="name" stroke="#6b7280" fontSize={12} />
-                      <YAxis yAxisId="left" stroke="#6b7280" fontSize={12} />
-                      <YAxis
-                        yAxisId="right"
-                        orientation="right"
-                        stroke="#6b7280"
-                        fontSize={12}
-                      />
-                      <Tooltip
-                        contentStyle={{
-                          backgroundColor: "rgba(255, 255, 255, 0.95)",
-                          border: "none",
-                          borderRadius: "12px",
-                          boxShadow: "0 10px 40px rgba(0,0,0,0.1)",
-                        }}
-                      />
-                      <Line
-                        yAxisId="left"
-                        type="monotone"
-                        dataKey="revenue"
-                        stroke="#171717"
-                        strokeWidth={3}
-                        dot={{ fill: "#171717" }}
-                      />
-                      <Line
-                        yAxisId="right"
-                        type="monotone"
-                        dataKey="patients"
-                        stroke="#a3a3a3"
-                        strokeWidth={3}
-                        dot={{ fill: "#a3a3a3" }}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
-                  <div className="flex justify-center gap-6 mt-4">
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 rounded-full bg-neutral-900" />
-                      <span className="text-sm text-neutral-600 font-poppins">
-                        Revenue ($)
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className="w-3 h-3 rounded-full bg-neutral-400" />
-                      <span className="text-sm text-neutral-600 font-poppins">
-                        Patients
-                      </span>
-                    </div>
-                  </div>
-                </motion.div>
-
-                {/* Consultation Types */}
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.3 }}
-                  className="bg-white rounded-2xl p-6 border border-neutral-200 shadow-sm"
-                >
-                  <h3 className="text-xl font-neue-bold text-neutral-900 mb-6">
-                    Consultation Types
-                  </h3>
-                  <ResponsiveContainer width="100%" height={300}>
-                    <PieChart>
-                      <Pie
-                        data={consultationTypeData}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={70}
-                        outerRadius={110}
-                        paddingAngle={5}
-                        dataKey="value"
-                        label={({ name, percent }) =>
-                          `${name} ${(percent * 100).toFixed(0)}%`
-                        }
-                      >
-                        {consultationTypeData.map((entry, index) => (
-                          <Cell
-                            key={`cell-${index}`}
-                            fill={
-                              CONSULTATION_COLORS[
-                                index % CONSULTATION_COLORS.length
-                              ]
-                            }
-                          />
-                        ))}
-                      </Pie>
-                      <Tooltip
-                        contentStyle={{
-                          backgroundColor: "rgba(255, 255, 255, 0.95)",
-                          border: "none",
-                          borderRadius: "12px",
-                          boxShadow: "0 10px 40px rgba(0,0,0,0.1)",
-                        }}
-                      />
-                    </PieChart>
-                  </ResponsiveContainer>
-                  <div className="flex justify-center gap-6 mt-4">
-                    {consultationTypeData.map((item, idx) => (
-                      <div key={idx} className="flex items-center gap-2">
-                        <div
-                          className="w-3 h-3 rounded-full"
-                          style={{ backgroundColor: CONSULTATION_COLORS[idx] }}
-                        />
-                        <span className="text-sm text-neutral-600 font-poppins">
-                          {item.name}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </motion.div>
-              </div>
-
-              {/* Bottom Row */}
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* Patient Demographics */}
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.4 }}
-                  className="bg-white rounded-2xl p-6 border border-neutral-200 shadow-sm"
-                >
-                  <h3 className="text-xl font-neue-bold text-neutral-900 mb-6">
-                    Age Distribution
-                  </h3>
-                  <ResponsiveContainer width="100%" height={200}>
-                    <PieChart>
-                      <Pie
-                        data={patientAgeData}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={40}
-                        outerRadius={80}
-                        paddingAngle={5}
-                        dataKey="value"
-                      >
-                        {patientAgeData.map((entry, index) => (
-                          <Cell
-                            key={`cell-${index}`}
-                            fill={COLORS[index % COLORS.length]}
-                          />
-                        ))}
-                      </Pie>
-                      <Tooltip />
-                    </PieChart>
-                  </ResponsiveContainer>
-                  <div className="flex flex-wrap justify-center gap-3 mt-4">
-                    {patientAgeData.map((entry, idx) => (
-                      <div key={idx} className="flex items-center gap-2">
-                        <div
-                          className="w-2 h-2 rounded-full"
-                          style={{ backgroundColor: COLORS[idx] }}
-                        />
-                        <span className="text-xs text-neutral-600 font-poppins">
-                          {entry.name}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </motion.div>
-
-                {/* Recent Activity */}
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.5 }}
-                  className="lg:col-span-2 bg-white rounded-2xl p-6 border border-neutral-200 shadow-sm"
-                >
-                  <h3 className="text-xl font-neue-bold text-neutral-900 mb-6">
-                    Recent Activity
-                  </h3>
-                  <div className="space-y-4">
-                    {[
-                      {
-                        action: "New patient registered",
-                        patient: "John Smith",
-                        time: "5 min ago",
-                        icon: Users,
-                        color: "bg-neutral-200 text-neutral-700",
-                      },
-                      {
-                        action: "Video consultation completed",
-                        patient: "Sarah Johnson",
-                        time: "15 min ago",
-                        icon: Video,
-                        color: "bg-neutral-200 text-neutral-700",
-                      },
-                      {
-                        action: "Prescription issued",
-                        patient: "Michael Chen",
-                        time: "30 min ago",
-                        icon: FileText,
-                        color: "bg-neutral-200 text-neutral-700",
-                      },
-                      {
-                        action: "Appointment scheduled",
-                        patient: "Emily Davis",
-                        time: "1 hour ago",
-                        icon: CalendarIcon,
-                        color: "bg-neutral-200 text-neutral-700",
-                      },
-                      {
-                        action: "Lab results uploaded",
-                        patient: "Robert Wilson",
-                        time: "2 hours ago",
-                        icon: FileText,
-                        color: "bg-neutral-200 text-neutral-700",
-                      },
-                    ].map((activity, idx) => (
-                      <motion.div
-                        key={idx}
-                        initial={{ opacity: 0, x: -20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{ delay: 0.6 + idx * 0.1 }}
-                        className="flex items-center gap-4 p-3 rounded-xl hover:bg-neutral-50 transition-colors"
-                      >
-                        <div className={cn("p-2.5 rounded-lg", activity.color)}>
-                          <activity.icon className="w-4 h-4" />
-                        </div>
-                        <div className="flex-1">
-                          <p className="font-poppins text-neutral-900">
-                            {activity.action}
-                          </p>
-                          <p className="text-sm text-neutral-500 font-poppins">
-                            {activity.patient}
-                          </p>
-                        </div>
-                        <span className="text-xs text-neutral-400 font-poppins">
-                          {activity.time}
-                        </span>
-                      </motion.div>
-                    ))}
-                  </div>
-                </motion.div>
-              </div>
-            </motion.div>
-          </>
-        )}
-
-        {/* ── Settings / Profile tab ── */}
-        {activeTab === "settings" && (
-          <SettingsPanel />
-        )}
+        {/* ── Settings tab ── */}
+        {activeTab === "settings" && <SettingsPanel />}
       </main>
     </div>
   );
 }
 
-// ── Standalone settings panel (loads + saves doctor profile) ──
+// ── Exercise Catalogue (hardcoded clinical parameters) ────────────────────────
+const EXERCISE_CATALOGUE = [
+  // ── Knee
+  {
+    id: "knee-flex", category: "Knee", emoji: "🦵",
+    name: "Knee Flexion & Extension",
+    description: "Bend and straighten the knee through full range of motion while seated. Improves joint mobility post-surgery or after immobilisation.",
+    targetJoint: "knee_left", targetAngleMin: 90, targetAngleMax: 140,
+    holdDurationSec: 2, reps: 10, sets: 3,
+  },
+  {
+    id: "quad-set", category: "Knee", emoji: "🦵",
+    name: "Quad Set",
+    description: "Tighten the quadriceps by pressing the back of the knee into the floor. Activates quads without joint stress — ideal early post-op.",
+    targetJoint: "knee_left", targetAngleMin: 0, targetAngleMax: 15,
+    holdDurationSec: 5, reps: 10, sets: 3,
+  },
+  {
+    id: "terminal-knee", category: "Knee", emoji: "🦵",
+    name: "Terminal Knee Extension",
+    description: "From 30° flexion, straighten the knee against resistance. Strengthens VMO and improves knee stability.",
+    targetJoint: "knee_left", targetAngleMin: 0, targetAngleMax: 30,
+    holdDurationSec: 2, reps: 12, sets: 3,
+  },
+  {
+    id: "heel-slide", category: "Knee", emoji: "🦵",
+    name: "Heel Slides",
+    description: "Lying flat, slide heel toward the buttocks to increase knee flexion. Gentle ROM exercise for early rehab phases.",
+    targetJoint: "knee_left", targetAngleMin: 80, targetAngleMax: 130,
+    holdDurationSec: 3, reps: 10, sets: 3,
+  },
+  {
+    id: "wall-squat", category: "Knee", emoji: "🦵",
+    name: "Wall Squat",
+    description: "Back against wall, slide down to 60–90° knee bend. Builds quad and glute strength with controlled load.",
+    targetJoint: "knee_left", targetAngleMin: 60, targetAngleMax: 90,
+    holdDurationSec: 5, reps: 8, sets: 3,
+  },
+  // ── Hip
+  {
+    id: "hip-flex", category: "Hip", emoji: "🍑",
+    name: "Hip Flexion",
+    description: "Lift the knee toward the chest in standing or lying position. Restores hip flexor strength and range after surgery or disuse.",
+    targetJoint: "hip_flexion_left", targetAngleMin: 60, targetAngleMax: 90,
+    holdDurationSec: 2, reps: 10, sets: 3,
+  },
+  {
+    id: "glute-bridge", category: "Hip", emoji: "🍑",
+    name: "Glute Bridge",
+    description: "Lying on back, push hips toward the ceiling by squeezing glutes. Core and gluteal activation essential for lower-limb stability.",
+    targetJoint: "hip_flexion_left", targetAngleMin: 130, targetAngleMax: 160,
+    holdDurationSec: 3, reps: 12, sets: 3,
+  },
+  {
+    id: "hip-abduction", category: "Hip", emoji: "🍑",
+    name: "Hip Abduction (Side-lying)",
+    description: "Lying on side, lift the top leg upward. Strengthens hip abductors and iliotibial band for walking and stair stability.",
+    targetJoint: "hip_flexion_left", targetAngleMin: 20, targetAngleMax: 45,
+    holdDurationSec: 2, reps: 12, sets: 3,
+  },
+  {
+    id: "clamshell", category: "Hip", emoji: "🍑",
+    name: "Clamshell",
+    description: "Side-lying with knees bent, rotate the top knee upward like a clamshell opening. Activates hip external rotators and glute medius.",
+    targetJoint: "hip_flexion_left", targetAngleMin: 30, targetAngleMax: 60,
+    holdDurationSec: 2, reps: 15, sets: 3,
+  },
+  // ── Shoulder
+  {
+    id: "shoulder-abd", category: "Shoulder", emoji: "💪",
+    name: "Shoulder Abduction",
+    description: "Raise the arm to the side from hip to shoulder height. Core shoulder rehab movement for rotator cuff and impingement conditions.",
+    targetJoint: "shoulder_abduction_left", targetAngleMin: 70, targetAngleMax: 110,
+    holdDurationSec: 2, reps: 10, sets: 3,
+  },
+  {
+    id: "shoulder-flex", category: "Shoulder", emoji: "💪",
+    name: "Shoulder Forward Flexion",
+    description: "Lift the arm forward and upward in the sagittal plane. Restores forward reach and overhead function.",
+    targetJoint: "shoulder_abduction_left", targetAngleMin: 80, targetAngleMax: 140,
+    holdDurationSec: 2, reps: 10, sets: 3,
+  },
+  {
+    id: "pendulum", category: "Shoulder", emoji: "💪",
+    name: "Pendulum Circles",
+    description: "Lean forward, let the arm hang freely, and draw small circles. Gravity-assisted distraction — ideal in acute phases to reduce pain.",
+    targetJoint: "shoulder_abduction_left", targetAngleMin: 20, targetAngleMax: 50,
+    holdDurationSec: 0, reps: 20, sets: 2,
+  },
+  {
+    id: "ext-rotation", category: "Shoulder", emoji: "💪",
+    name: "External Shoulder Rotation",
+    description: "Elbow at 90°, rotate the forearm outward away from the body. Strengthens infraspinatus and teres minor — key rotator cuff muscles.",
+    targetJoint: "elbow_left", targetAngleMin: 85, targetAngleMax: 95,
+    holdDurationSec: 2, reps: 12, sets: 3,
+  },
+  {
+    id: "wall-push", category: "Shoulder", emoji: "💪",
+    name: "Wall Push-Up",
+    description: "Hands on wall at shoulder height, perform a controlled push-up. Low-load scapular stabilisation and shoulder press rehab.",
+    targetJoint: "elbow_left", targetAngleMin: 30, targetAngleMax: 90,
+    holdDurationSec: 1, reps: 12, sets: 3,
+  },
+  // ── Elbow
+  {
+    id: "elbow-flex", category: "Elbow", emoji: "💪",
+    name: "Elbow Flexion & Extension",
+    description: "Curl the forearm toward the shoulder and return. Restores elbow ROM after fracture, dislocation, or tendon repair.",
+    targetJoint: "elbow_left", targetAngleMin: 30, targetAngleMax: 140,
+    holdDurationSec: 2, reps: 10, sets: 3,
+  },
+  {
+    id: "bicep-curl", category: "Elbow", emoji: "💪",
+    name: "Bicep Curl (Light Resistance)",
+    description: "Controlled curl with light dumbbell or band. Progressive loading of the biceps brachii in mid and late rehab stages.",
+    targetJoint: "elbow_left", targetAngleMin: 50, targetAngleMax: 140,
+    holdDurationSec: 1, reps: 12, sets: 3,
+  },
+  // ── Spine / Core
+  {
+    id: "cat-cow", category: "Spine", emoji: "🔄",
+    name: "Cat-Cow",
+    description: "On all fours, alternate arching and rounding the spine. Mobilises thoracic and lumbar vertebrae, reduces stiffness and pain.",
+    targetJoint: "hip_flexion_left", targetAngleMin: 110, targetAngleMax: 150,
+    holdDurationSec: 3, reps: 10, sets: 2,
+  },
+  {
+    id: "bird-dog", category: "Spine", emoji: "🔄",
+    name: "Bird Dog",
+    description: "On all fours, extend opposite arm and leg simultaneously. Core stability and lumbar control — minimal spinal load.",
+    targetJoint: "hip_flexion_left", targetAngleMin: 160, targetAngleMax: 180,
+    holdDurationSec: 5, reps: 8, sets: 3,
+  },
+  {
+    id: "dead-bug", category: "Spine", emoji: "🔄",
+    name: "Dead Bug",
+    description: "Lying on back with arms up and knees bent, lower opposite arm and leg toward the floor. Trains deep core while protecting the lumbar spine.",
+    targetJoint: "hip_flexion_left", targetAngleMin: 80, targetAngleMax: 120,
+    holdDurationSec: 3, reps: 8, sets: 3,
+  },
+  {
+    id: "seated-row", category: "Spine", emoji: "🔄",
+    name: "Seated Row (Band)",
+    description: "Seated, pull a resistance band toward the lower chest. Strengthens rhomboids and mid-trapezius — corrects forward posture.",
+    targetJoint: "elbow_left", targetAngleMin: 80, targetAngleMax: 90,
+    holdDurationSec: 2, reps: 12, sets: 3,
+  },
+  // ── Ankle / Calf
+  {
+    id: "calf-raise", category: "Ankle", emoji: "🦶",
+    name: "Calf Raise",
+    description: "Rise up on tiptoes and slowly lower. Strengthens gastrocnemius and soleus — essential after ankle sprain or Achilles tendon rehab.",
+    targetJoint: "knee_left", targetAngleMin: 155, targetAngleMax: 175,
+    holdDurationSec: 2, reps: 15, sets: 3,
+  },
+  {
+    id: "ankle-circles", category: "Ankle", emoji: "🦶",
+    name: "Ankle Circles",
+    description: "Rotate the ankle slowly in both directions. Reduces swelling, restores proprioception after sprain or immobilisation.",
+    targetJoint: "knee_left", targetAngleMin: 150, targetAngleMax: 175,
+    holdDurationSec: 1, reps: 20, sets: 2,
+  },
+];
+
+const CATEGORIES = ["All", "Knee", "Hip", "Shoulder", "Elbow", "Spine", "Ankle"] as const;
+const CATEGORY_COLORS: Record<string, string> = {
+  Knee: "bg-blue-100 text-blue-700",
+  Hip: "bg-purple-100 text-purple-700",
+  Shoulder: "bg-orange-100 text-orange-700",
+  Elbow: "bg-amber-100 text-amber-700",
+  Spine: "bg-teal-100 text-teal-700",
+  Ankle: "bg-green-100 text-green-700",
+};
+
+// ── Rehab Panel ───────────────────────────────────────────────────────────────
+function RehabPanel() {
+  type View = "patients" | "catalogue";
+
+  const [view, setView] = useState<View>("patients");
+  interface RehabPatient { id: string; fullName: string; email: string; }
+  interface RehabPlan { id: string; patientId: string; title: string; status: string; exercises?: unknown[]; }
+  interface RehabAlert { id: string; severity: string; reason: string; planId?: string; plan?: { title: string }; }
+
+  const [doctorId, setDoctorId] = useState<string | null>(null);
+  const [patients, setPatients] = useState<RehabPatient[]>([]);
+  const [selectedPatient, setSelectedPatient] = useState<RehabPatient | null>(null);
+  const [selectedExercises, setSelectedExercises] = useState<Set<string>>(new Set());
+  const [categoryFilter, setCategoryFilter] = useState<string>("All");
+  const [plans, setPlans] = useState<RehabPlan[]>([]);
+  const [alerts, setAlerts] = useState<RehabAlert[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [planTitle, setPlanTitle] = useState("Rehab Plan");
+  const [ackingId, setAckingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const user = loadAuthUser();
+    const dId = user?.doctorProfile?.id;
+    if (!dId) { setLoading(false); return; }
+    setDoctorId(dId);
+
+    Promise.all([
+      fetch(`${API_BASE}/api/appointments?doctorId=${dId}`).then((r) => r.json()),
+      fetch(`${API_BASE}/api/rehab/plans?doctorId=${dId}`).then((r) => r.json()),
+      fetch(`${API_BASE}/api/rehab/alerts?doctorId=${dId}`).then((r) => r.json()),
+    ])
+      .then(([apptData, plansData, alertsData]: [Record<string, unknown[]>, Record<string, unknown[]>, Record<string, unknown[]>]) => {
+        const seen = new Set<string>();
+        const unique: RehabPatient[] = [];
+        for (const appt of (apptData.appointments ?? []) as Array<{ patient?: { id: string; fullName: string; user?: { email: string } } }>) {
+          const p = appt.patient;
+          if (p && !seen.has(p.id)) {
+            seen.add(p.id);
+            unique.push({ id: p.id, fullName: p.fullName, email: p.user?.email ?? "" });
+          }
+        }
+        setPatients(unique);
+        setPlans((plansData.plans ?? []) as RehabPlan[]);
+        setAlerts((alertsData.alerts ?? []) as RehabAlert[]);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleAck = async (alertId: string) => {
+    setAckingId(alertId);
+    try {
+      await fetch(`${API_BASE}/api/rehab/alerts/${alertId}/acknowledge`, { method: "PATCH" });
+      setAlerts((prev) => prev.filter((a) => a.id !== alertId));
+    } finally { setAckingId(null); }
+  };
+
+  const toggleExercise = (id: string) => {
+    setSelectedExercises((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) { next.delete(id); } else { next.add(id); }
+      return next;
+    });
+  };
+
+  const handleCreatePlan = async () => {
+    if (!selectedPatient || !doctorId || selectedExercises.size === 0) return;
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      const exercises = EXERCISE_CATALOGUE
+        .filter((ex) => selectedExercises.has(ex.id))
+        .map((ex, idx) => ({
+          name: ex.name,
+          description: ex.description,
+          targetJoint: ex.targetJoint,
+          targetAngleMin: ex.targetAngleMin,
+          targetAngleMax: ex.targetAngleMax,
+          holdDurationSec: ex.holdDurationSec,
+          reps: ex.reps,
+          sets: ex.sets,
+          order: idx,
+        }));
+
+      const res = await fetch(`${API_BASE}/api/rehab/plans`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          patientId: selectedPatient.id,
+          doctorId,
+          title: planTitle || `Rehab Plan — ${selectedPatient.fullName}`,
+          exercises,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error ?? "Failed to create plan");
+      }
+      const { plan } = await res.json();
+      setPlans((prev) => [plan, ...prev]);
+      setSelectedExercises(new Set());
+      setSelectedPatient(null);
+      setPlanTitle("Rehab Plan");
+      setView("patients");
+    } catch (e) {
+      setSubmitError(e instanceof Error ? e.message : "Failed to create plan");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const filteredCatalogue =
+    categoryFilter === "All"
+      ? EXERCISE_CATALOGUE
+      : EXERCISE_CATALOGUE.filter((ex) => ex.category === categoryFilter);
+
+  const severityColor = (s: string) =>
+    ({
+      HIGH: "text-red-600 bg-red-50 border-red-200",
+      MEDIUM: "text-amber-600 bg-amber-50 border-amber-200",
+      LOW: "text-blue-600 bg-blue-50 border-blue-200",
+    }[s] ?? "text-gray-600 bg-gray-50 border-gray-200");
+
+  if (loading)
+    return (
+      <div className="h-64 flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-neutral-900 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+
+  // ── Catalogue view ────────────────────────────────────────────────────────
+  if (view === "catalogue" && selectedPatient) {
+    return (
+      <div className="p-6 max-w-5xl mx-auto">
+        <div className="flex items-center gap-3 mb-6">
+          <button
+            onClick={() => { setView("patients"); setSelectedExercises(new Set()); }}
+            className="text-sm text-blue-600 hover:underline"
+          >
+            ← Back
+          </button>
+          <div>
+            <h1 className="text-xl font-bold text-gray-900">
+              Prescribe Exercises for {selectedPatient.fullName}
+            </h1>
+            <p className="text-sm text-gray-500">Select exercises from the catalogue below</p>
+          </div>
+        </div>
+
+        <div className="mb-4">
+          <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+            Plan Title
+          </label>
+          <input
+            value={planTitle}
+            onChange={(e) => setPlanTitle(e.target.value)}
+            className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            placeholder="e.g. Post-ACL Reconstruction Rehab"
+          />
+        </div>
+
+        <div className="flex gap-2 flex-wrap mb-5">
+          {CATEGORIES.map((cat) => (
+            <button
+              key={cat}
+              onClick={() => setCategoryFilter(cat)}
+              className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
+                categoryFilter === cat
+                  ? "bg-blue-600 text-white border-blue-600"
+                  : "bg-white text-gray-600 border-gray-200 hover:border-blue-300"
+              }`}
+            >
+              {cat}
+            </button>
+          ))}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
+          {filteredCatalogue.map((ex) => {
+            const selected = selectedExercises.has(ex.id);
+            return (
+              <button
+                key={ex.id}
+                onClick={() => toggleExercise(ex.id)}
+                className={`text-left rounded-xl border-2 p-4 transition-all relative ${
+                  selected
+                    ? "border-blue-500 bg-blue-50 shadow-md"
+                    : "border-gray-200 bg-white hover:border-blue-300 hover:shadow-sm"
+                }`}
+              >
+                {selected && (
+                  <div className="absolute top-3 right-3 w-5 h-5 bg-blue-600 rounded-full flex items-center justify-center">
+                    <CheckCircle className="w-3 h-3 text-white" />
+                  </div>
+                )}
+                <div className="text-3xl mb-2">{ex.emoji}</div>
+                <span
+                  className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold mb-1 ${
+                    CATEGORY_COLORS[ex.category] ?? "bg-gray-100 text-gray-600"
+                  }`}
+                >
+                  {ex.category}
+                </span>
+                <h3 className="font-semibold text-gray-900 text-sm leading-tight">{ex.name}</h3>
+                <p className="text-xs text-gray-500 mt-1 leading-relaxed line-clamp-2">
+                  {ex.description}
+                </p>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  <span className="px-1.5 py-0.5 bg-gray-100 rounded text-xs text-gray-500 font-mono">
+                    {ex.reps}r × {ex.sets}s
+                  </span>
+                  {ex.holdDurationSec > 0 && (
+                    <span className="px-1.5 py-0.5 bg-gray-100 rounded text-xs text-gray-500 font-mono">
+                      hold {ex.holdDurationSec}s
+                    </span>
+                  )}
+                  <span className="px-1.5 py-0.5 bg-gray-100 rounded text-xs text-gray-500 font-mono">
+                    {ex.targetAngleMin}°–{ex.targetAngleMax}°
+                  </span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="sticky bottom-0 bg-white border-t border-gray-200 -mx-6 px-6 py-4 flex items-center justify-between">
+          <p className="text-sm text-gray-600">
+            {selectedExercises.size === 0
+              ? "Select at least one exercise"
+              : `${selectedExercises.size} exercise${selectedExercises.size !== 1 ? "s" : ""} selected`}
+          </p>
+          <div className="flex gap-3 items-center">
+            {submitError && <p className="text-xs text-red-500">{submitError}</p>}
+            <button
+              onClick={handleCreatePlan}
+              disabled={selectedExercises.size === 0 || submitting}
+              className="px-5 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-xl hover:bg-blue-700 disabled:opacity-40 transition-colors"
+            >
+              {submitting ? "Creating…" : "Create Plan →"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Patients + plans + alerts view ────────────────────────────────────────
+  return (
+    <div className="p-6 space-y-6 max-w-5xl mx-auto">
+      <h1 className="text-2xl font-bold text-gray-900">Rehab Management</h1>
+
+      {alerts.length > 0 && (
+        <div className="space-y-2">
+          <h2 className="text-xs font-bold text-gray-500 uppercase tracking-widest">
+            Alerts ({alerts.length})
+          </h2>
+          {alerts.map((alert) => (
+            <div
+              key={alert.id}
+              className={`flex items-center justify-between rounded-xl border px-4 py-3 ${severityColor(alert.severity)}`}
+            >
+              <div>
+                <span className="text-xs font-bold uppercase">{alert.severity}</span>
+                <p className="text-sm mt-0.5">{alert.reason}</p>
+                {alert.plan && (
+                  <Link
+                    href={`/rehab/plans/${alert.planId}`}
+                    className="text-xs underline opacity-70 hover:opacity-100 block mt-0.5"
+                  >
+                    {alert.plan.title}
+                  </Link>
+                )}
+              </div>
+              <button
+                onClick={() => handleAck(alert.id)}
+                disabled={ackingId === alert.id}
+                className="ml-4 text-xs px-3 py-1.5 rounded-lg border border-current opacity-60 hover:opacity-100 disabled:opacity-30"
+              >
+                {ackingId === alert.id ? "…" : "Dismiss"}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div>
+        <h2 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-3">
+          Your Patients — click to prescribe exercises
+        </h2>
+        {patients.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-gray-200 py-12 text-center text-gray-400">
+            <Users className="w-8 h-8 mx-auto mb-2 opacity-30" />
+            <p>No patients yet. Patients appear here once they book an appointment with you.</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {patients.map((p) => {
+              const patientPlans = plans.filter((pl) => pl.patientId === p.id);
+              return (
+                <button
+                  key={p.id}
+                  onClick={() => {
+                    setSelectedPatient(p);
+                    setPlanTitle(`Rehab Plan — ${p.fullName}`);
+                    setSelectedExercises(new Set());
+                    setView("catalogue");
+                  }}
+                  className="text-left bg-white rounded-xl border border-gray-200 p-4 hover:border-blue-400 hover:shadow-md transition-all group"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-linear-to-br from-blue-400 to-indigo-500 flex items-center justify-center text-white font-bold text-sm shrink-0">
+                      {p.fullName?.charAt(0) ?? "?"}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="font-semibold text-gray-900 truncate">{p.fullName}</p>
+                      <p className="text-xs text-gray-400 truncate">{p.email}</p>
+                    </div>
+                  </div>
+                  <div className="mt-3 flex items-center justify-between">
+                    <span className="text-xs text-gray-500">
+                      {patientPlans.length} plan{patientPlans.length !== 1 ? "s" : ""}
+                    </span>
+                    <span className="text-xs text-blue-600 group-hover:underline font-medium">
+                      + Prescribe →
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {plans.length > 0 && (
+        <div>
+          <h2 className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-3">
+            Active Plans
+          </h2>
+          <div className="grid gap-3">
+            {plans.map((plan) => (
+              <Link key={plan.id} href={`/rehab/plans/${plan.id}`} className="block">
+                <div className="bg-white rounded-xl border border-gray-200 p-4 hover:border-blue-300 hover:shadow-sm transition-all flex items-center justify-between">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-gray-900 truncate">{plan.title}</p>
+                    <p className="text-xs text-gray-400 mt-0.5">
+                      {(plan.exercises ?? []).length} exercises
+                    </p>
+                  </div>
+                  <span
+                    className={`ml-3 shrink-0 px-2 py-0.5 rounded-full text-xs font-medium ${
+                      {
+                        ACTIVE: "bg-green-100 text-green-700",
+                        PAUSED: "bg-amber-100 text-amber-700",
+                        COMPLETED: "bg-blue-100 text-blue-700",
+                        CANCELLED: "bg-red-100 text-red-700",
+                      }[plan.status as string] ?? "bg-gray-100 text-gray-700"
+                    }`}
+                  >
+                    {plan.status}
+                  </span>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Settings Panel ────────────────────────────────────────────────────────────
 function SettingsPanel() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -2438,7 +1364,9 @@ function SettingsPanel() {
     setLoading(false);
   }, []);
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+  const handleChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
+  ) => {
     setForm({ ...form, [e.target.name]: e.target.value });
     setSaved(false);
   };
@@ -2460,15 +1388,15 @@ function SettingsPanel() {
         city: form.city || undefined,
         country: form.country || undefined,
       });
-
-      // Keep local auth storage in sync
       const user = loadAuthUser();
       if (user) {
         saveAuthUser({ ...user, doctorProfile: { ...user.doctorProfile, ...doctor } });
       }
       setSaved(true);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to save. Please try again.");
+      setError(
+        err instanceof ApiError ? err.message : "Failed to save. Please try again."
+      );
     } finally {
       setSaving(false);
     }
@@ -2482,12 +1410,19 @@ function SettingsPanel() {
     );
   }
 
-  const inputCls = "w-full px-4 py-3 border border-neutral-300 rounded-xl focus:ring-2 focus:ring-neutral-400 focus:border-neutral-500 outline-none bg-white text-neutral-900 placeholder:text-neutral-400 font-poppins";
+  const inputCls =
+    "w-full px-4 py-3 border border-neutral-300 rounded-xl focus:ring-2 focus:ring-neutral-400 focus:border-neutral-500 outline-none bg-white text-neutral-900 placeholder:text-neutral-400 font-poppins";
 
   return (
-    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="max-w-2xl">
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="max-w-2xl"
+    >
       <h1 className="text-3xl font-neue-bold text-neutral-900 mb-2">Profile & Settings</h1>
-      <p className="text-neutral-500 font-poppins mb-8">Update your professional details and consultation fee.</p>
+      <p className="text-neutral-500 font-poppins mb-8">
+        Update your professional details and consultation fee.
+      </p>
 
       {error && (
         <div className="mb-6 p-4 rounded-xl bg-red-50 border border-red-200 text-red-700 text-sm font-poppins">
@@ -2501,83 +1436,146 @@ function SettingsPanel() {
       )}
 
       <form onSubmit={handleSave} className="space-y-6">
-        {/* Personal */}
         <div className="bg-white rounded-2xl border border-neutral-200 p-6 space-y-5">
           <h2 className="text-lg font-neue-bold text-neutral-900">Personal information</h2>
-
           <div>
-            <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">Full name</label>
-            <input type="text" name="fullName" value={form.fullName} onChange={handleChange} className={inputCls} placeholder="Dr. John Smith" />
+            <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">
+              Full name
+            </label>
+            <input
+              type="text"
+              name="fullName"
+              value={form.fullName}
+              onChange={handleChange}
+              className={inputCls}
+              placeholder="Dr. John Smith"
+            />
           </div>
-
           <div>
-            <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">Bio (optional)</label>
-            <textarea name="bio" value={form.bio} onChange={handleChange} rows={3} className={inputCls + " resize-none"} placeholder="Brief professional summary visible to patients…" />
+            <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">
+              Bio (optional)
+            </label>
+            <textarea
+              name="bio"
+              value={form.bio}
+              onChange={handleChange}
+              rows={3}
+              className={inputCls + " resize-none"}
+              placeholder="Brief professional summary visible to patients…"
+            />
           </div>
-
-          <div className="flex gap-4">
-            <div className="flex-1">
-              <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">Years of experience</label>
-              <input type="number" name="experienceYears" value={form.experienceYears} onChange={handleChange} min="0" max="60" className={inputCls} placeholder="5" />
-            </div>
+          <div>
+            <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">
+              Years of experience
+            </label>
+            <input
+              type="number"
+              name="experienceYears"
+              value={form.experienceYears}
+              onChange={handleChange}
+              min="0"
+              max="60"
+              className={inputCls}
+              placeholder="5"
+            />
           </div>
         </div>
 
-        {/* Clinic */}
         <div className="bg-white rounded-2xl border border-neutral-200 p-6 space-y-5">
           <h2 className="text-lg font-neue-bold text-neutral-900">Clinic / Practice</h2>
-
           <div>
-            <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">Clinic name</label>
-            <input type="text" name="clinicName" value={form.clinicName} onChange={handleChange} className={inputCls} placeholder="Apollo Clinic, City Hospital, etc." />
+            <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">
+              Clinic name
+            </label>
+            <input
+              type="text"
+              name="clinicName"
+              value={form.clinicName}
+              onChange={handleChange}
+              className={inputCls}
+              placeholder="Apollo Clinic, City Hospital, etc."
+            />
           </div>
-
           <div>
-            <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">Address</label>
-            <input type="text" name="clinicAddress" value={form.clinicAddress} onChange={handleChange} className={inputCls} placeholder="123 Main St" />
+            <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">
+              Address
+            </label>
+            <input
+              type="text"
+              name="clinicAddress"
+              value={form.clinicAddress}
+              onChange={handleChange}
+              className={inputCls}
+              placeholder="123 Main St"
+            />
           </div>
-
           <div className="flex gap-4">
             <div className="flex-1">
-              <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">City</label>
-              <input type="text" name="city" value={form.city} onChange={handleChange} className={inputCls} placeholder="Mumbai" />
+              <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">
+                City
+              </label>
+              <input
+                type="text"
+                name="city"
+                value={form.city}
+                onChange={handleChange}
+                className={inputCls}
+                placeholder="Mumbai"
+              />
             </div>
             <div className="flex-1">
-              <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">Country</label>
-              <input type="text" name="country" value={form.country} onChange={handleChange} className={inputCls} placeholder="India" />
+              <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">
+                Country
+              </label>
+              <input
+                type="text"
+                name="country"
+                value={form.country}
+                onChange={handleChange}
+                className={inputCls}
+                placeholder="India"
+              />
             </div>
           </div>
         </div>
 
-        {/* Billing */}
         <div className="bg-white rounded-2xl border border-neutral-200 p-6 space-y-5">
           <h2 className="text-lg font-neue-bold text-neutral-900">Billing & Payments</h2>
           <p className="text-sm text-neutral-500 font-poppins -mt-2">
-            Patients pay their second and subsequent appointments via PayPal. Set your fee and PayPal email here.
+            Patients pay via PayPal for their second and subsequent appointments.
           </p>
-
-          <div className="flex gap-4">
-            <div className="flex-1">
-              <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">Consultation fee (USD)</label>
-              <div className="relative">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400 font-poppins text-sm">$</span>
-                <input
-                  type="number"
-                  name="consultationFee"
-                  value={form.consultationFee}
-                  onChange={handleChange}
-                  min="0"
-                  step="0.01"
-                  className={inputCls + " pl-8"}
-                  placeholder="50.00"
-                />
-              </div>
+          <div>
+            <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">
+              Consultation fee (USD)
+            </label>
+            <div className="relative">
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400 font-poppins text-sm">
+                $
+              </span>
+              <input
+                type="number"
+                name="consultationFee"
+                value={form.consultationFee}
+                onChange={handleChange}
+                min="0"
+                step="0.01"
+                className={inputCls + " pl-8"}
+                placeholder="50.00"
+              />
             </div>
           </div>
-
           <div>
-            <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">PayPal email (for receiving payments)</label>
-            <input type="email" name="paypalEmail" value={form.paypalEmail} onChange={handleChange} className={inputCls} placeholder="doctor@paypal.com" />
+            <label className="block text-sm font-semibold font-poppins text-neutral-700 mb-2">
+              PayPal email
+            </label>
+            <input
+              type="email"
+              name="paypalEmail"
+              value={form.paypalEmail}
+              onChange={handleChange}
+              className={inputCls}
+              placeholder="doctor@paypal.com"
+            />
           </div>
         </div>
 
@@ -2588,7 +1586,9 @@ function SettingsPanel() {
         >
           {saving ? (
             <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-          ) : "Save changes"}
+          ) : (
+            "Save changes"
+          )}
         </button>
       </form>
     </motion.div>
